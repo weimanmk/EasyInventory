@@ -1,4 +1,4 @@
-# EasyInventory V1.0
+# EasyInventory
 
 EasyInventory 是一个面向 Windows 单机使用的本地库存、计价、出库打单软件，用来替代原 Excel 工作簿中的库存、客户、出入库、利润和打印流程。
 
@@ -8,12 +8,14 @@ EasyInventory 是一个面向 Windows 单机使用的本地库存、计价、出
 C:/Users/ww/Desktop/work/EasyInventory
 ```
 
+当前版本：`1.2.0`
+
 ## 技术栈
 
 | 层级 | 当前实现 |
 | --- | --- |
 | 桌面壳 | Tauri 2 |
-| 前端 | React 19、TypeScript、Vite、Ant Design、React Router、Zustand、Day.js |
+| 前端 | React 19、TypeScript、Vite、Ant Design、ECharts、React Router、Zustand、Day.js |
 | 后端 | Rust、Tauri commands、rusqlite、calamine、umya-spreadsheet |
 | 数据库 | SQLite 本地文件数据库 |
 | 打包 | Windows release EXE 与 NSIS 安装包 |
@@ -65,7 +67,7 @@ C:/Users/ww/Desktop/work/订单库存表3.02 - 副本 (2).xlsm
 ### 3. 首页
 
 - 显示今日出库单数、商品销售额、客户实收、利润。
-- 提供快速入口：快速出库、入库、商品库存、客户规则、客户管理、月费账本、每日利润。
+- 提供快速入口：快速出库、入库、商品库存、客户规则、客户管理、月费账本、利润统计。
 - 显示最近出库单和最近入库记录。
 - 最近出库单支持点击整行或“详情”按钮打开出库详情抽屉。
 - 首页展示低库存商品数量，并可跳转到商品库存页的低库存筛选。
@@ -115,11 +117,16 @@ C:/Users/ww/Desktop/work/订单库存表3.02 - 副本 (2).xlsm
 - 支持关闭、作废月费记录。
 - 后端已提供可用月费查询和订单保存时的月费抵扣数据结构。
 
-### 10. 每日利润
+### 10. 利润统计
 
-- 支持按日期查询每日汇总。
-- 汇总字段包括出库单数、商品销售额、客户实收和利润。
+- 支持按日、月、年查询利润统计。
+- 支持按客户、商品类别筛选统计范围。
+- 汇总字段包括出库单数、商品销售额、客户实收、成本和利润。
+- 支持 ECharts 折线图展示销售额、实收、成本和利润趋势。
+- 支持 ECharts 柱状图展示周期销售额、成本、利润和订单数对比。
+- 支持按类别或客户切换饼图/环形图，并可查看利润或销售额占比。
 - 明细表展示单号、客户、销售额、实收、折现、月费抵扣、成本和利润。
+- 明细表保留订单预览和订单作废能力，作废后自动刷新统计。
 
 ### 11. 单据档案、导出和打印
 
@@ -157,7 +164,7 @@ C:/Users/ww/Desktop/work/订单库存表3.02 - 副本 (2).xlsm
 - 出库：`preview_quote`、`save_order`、`get_order`、`list_orders`、`export_order_document`、`print_order_document`、`print_order_document_with_options`、`void_order`
 - 规则：`list_customer_product_rules`、`save_customer_product_rule`、`disable_customer_product_rule`、`delete_customer_product_rule`
 - 月费：`list_monthly_credits`、`get_available_monthly_credits`、`close_monthly_credit`、`void_monthly_credit`
-- 利润：`get_daily_profit_summary`、`list_profit_records`
+- 利润：`get_daily_profit_summary`、`get_profit_analytics`、`list_profit_records`
 - 单据：`list_documents`、`open_document`、`export_document`、`print_document`
 - 导出：`export_data`、`open_exports_folder`
 - 迁移与备份：`import_excel`、`get_import_status`、`create_backup`、`list_backups`、`open_backup_folder`
@@ -179,7 +186,7 @@ C:/Users/ww/Desktop/work/订单库存表3.02 - 副本 (2).xlsm
 | 客户商品规则 | 固定价、买赠、折现、月费 | 已完成 |
 | 月费账本 | 查询、关闭、作废、可用状态 | 已完成 |
 | 出库时月费抵扣 | 选择可用月费并抵扣 | 已完成 |
-| 利润查询 | 每日汇总和订单明细 | 基本完成 |
+| 利润查询 | 日/月/年统计、趋势图、柱状图、饼图和订单明细 | 已完成 |
 | 单据导出 | 客户订单 xlsx | 已完成 |
 | 单据样式 | 尽量复刻原 Excel 打印区 | 已完成核心样式并有后端测试覆盖 |
 | 打印预览 | 打印前预览、选择打印机 | 已完成预览和打印机选择入口；Windows 直接定向打印失败时会打开文件供手动打印 |
@@ -211,9 +218,9 @@ C:/Users/ww/Desktop/work/订单库存表3.02 - 副本 (2).xlsm
 1. 数据恢复图形化入口。
 2. 批量导入客户商品规则。
 3. 盘点功能。
-4. 利润趋势图和更丰富的经营分析。
-5. 单据模板可视化编辑。
-6. 更系统的前端自动化测试或端到端测试。
+4. 单据模板可视化编辑。
+5. 更系统的前端自动化测试或端到端测试。
+6. 更多经营分析维度，如商品排行、客户复购和同比环比。
 
 ## 常用命令
 
@@ -245,11 +252,11 @@ npm run tauri:build
 
 ## 已知构建产物
 
-最近一次检查到的打包产物：
+最近一次打包产物：
 
 ```text
-C:/Users/ww/Desktop/work/EasyInventory/src-tauri/target-pack/release/easyinventory.exe
-C:/Users/ww/Desktop/work/EasyInventory/src-tauri/target-pack/release/bundle/nsis/EasyInventory_1.0.0_x64-setup.exe
+C:/Users/ww/Desktop/work/EasyInventory/src-tauri/target/release/easyinventory.exe
+C:/Users/ww/Desktop/work/EasyInventory/src-tauri/target/release/bundle/nsis/EasyInventory_1.2.0_x64-setup.exe
 ```
 
 ## 验证记录
@@ -273,16 +280,18 @@ C:/Users/ww/Desktop/work/EasyInventory/src-tauri/target-pack/release/bundle/nsis
 - 报价预览中的买赠、折现、月费金额计算
 - 订单作废时库存和月费使用回滚
 - 单据 `.xlsx` 样式与原 Excel 打印区域核心结构比对
+- 利润统计日/月/年聚合、类别明细拆分、客户与类别筛选
 
-本次 README 更新后已执行：
+最近一次完整检查已执行：
 
 ```powershell
-npm run build
-& "C:/Users/ww/.cargo/bin/cargo.exe" test
+npm run check
+npm run tauri:build
 ```
 
 结果：
 
-- `npm run build`：通过，TypeScript 与 Vite 生产构建成功。
-- `cargo test`：通过，`5 passed; 0 failed`。
-- `cargo test` 当前仍有 2 个既有 `dead_code` warning，不影响测试结果。
+- `npm run check`：通过，包含前端生产构建、Rust 格式检查、clippy、Rust 单测和健壮性检查。
+- `cargo test`：通过，`35 passed; 0 failed`。
+- `scripts/robustness-check.mjs`：通过，`11` 项检查通过。
+- `npm run tauri:build`：通过，生成 release EXE 与 NSIS 安装包。
