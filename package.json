@@ -1,0 +1,42 @@
+{
+  "name": "easyinventory",
+  "version": "1.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "format:rust": "cd src-tauri && cargo fmt --check",
+    "lint:rust": "cd src-tauri && cargo clippy --all-targets -- -D warnings",
+    "test:rust": "cd src-tauri && cargo test",
+    "audit:robustness": "node scripts/robustness-check.mjs",
+    "test": "npm run typecheck && npm run format:rust && npm run lint:rust && npm run test:rust && npm run audit:robustness",
+    "check": "npm run build && npm run format:rust && npm run lint:rust && npm run test:rust && npm run audit:robustness",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
+  },
+  "dependencies": {
+    "@ant-design/icons": "^5.6.1",
+    "@tauri-apps/api": "^2.5.0",
+    "ag-grid-community": "^33.3.0",
+    "ag-grid-react": "^33.3.0",
+    "antd": "^5.25.4",
+    "dayjs": "^1.11.13",
+    "echarts": "^6.1.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-router-dom": "^7.6.1",
+    "zustand": "^5.0.5"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.5.0",
+    "@types/react": "^19.1.6",
+    "@types/react-dom": "^19.1.5",
+    "@vitejs/plugin-react": "^4.5.0",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5"
+  }
+}
