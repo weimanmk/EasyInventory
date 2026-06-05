@@ -17,9 +17,19 @@
   Windows 本地库存、计价、出库打单与经营分析工具
 </p>
 
-EasyInventory 是一个面向 Windows 单机使用的本地库存、计价、出库打单和经营分析软件，适合小型商贸、批发、配送、门店和档口经营场景。
+EasyInventory 是一个轻量、本地化、开箱即用的 Windows 单机库存、计价、出库打单和经营分析软件，适合小型商贸、批发、配送、门店和档口经营场景。数据默认保存在本机 SQLite 数据库中，不依赖云服务，适合希望用简单工具替代复杂 Excel 工作簿的日常经营管理。
 
 当前版本：`1.3.0`
+
+## 软件截图
+
+<p align="center">
+  <img src="docs/images/Initialize_the_interface.png" alt="首次使用初始化界面">
+</p>
+
+<p align="center">
+  <img src="docs/images/home_page.png" alt="首页经营概览">
+</p>
 
 ## 功能概览
 
