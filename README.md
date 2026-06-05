@@ -1,4 +1,8 @@
-# EasyInventory
+<p align="center">
+  <img src="src-tauri/icons/icon.ico" alt="EasyInventory 图标" width="120">
+</p>
+
+<h1 align="center">EasyInventory</h1>
 
 <p align="center">
   <img alt="Version" src="https://img.shields.io/badge/version-1.3.0-blue">
