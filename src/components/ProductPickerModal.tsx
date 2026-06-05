@@ -15,7 +15,7 @@ type Props = {
 
 export default function ProductPickerModal({ open, customer, onClose, onAdd }: Props) {
   const { message } = App.useApp();
-  const { products, lastCategory, setLastCategory } = useAppStore();
+  const { products, lastCategory, setLastCategory, terms } = useAppStore();
   const categories = useMemo(() => ['全部', ...uniqueValues(products, (item) => item.category)], [products]);
   const [category, setCategory] = useState(lastCategory ?? '全部');
   const [keyword, setKeyword] = useState('');
@@ -69,7 +69,7 @@ export default function ProductPickerModal({ open, customer, onClose, onAdd }: P
 
   async function addSelected() {
     if (!selected) {
-      message.warning('请选择商品');
+      message.warning(`请选择${terms.product}`);
       return;
     }
     const price = unitPrice ?? selected.defaultPrice ?? preview?.unitPrice ?? 0;
@@ -132,7 +132,7 @@ export default function ProductPickerModal({ open, customer, onClose, onAdd }: P
       });
       setScanCode('');
       setRemark('');
-      message.success(`扫码加入：${product.name}`);
+      message.success(`扫码加入${terms.product}：${product.name}`);
     } catch (error) {
       message.warning(error instanceof Error ? error.message : '扫码加入失败');
     }
@@ -140,7 +140,7 @@ export default function ProductPickerModal({ open, customer, onClose, onAdd }: P
 
   return (
     <Modal
-      title="选择商品"
+      title={`选择${terms.product}`}
       open={open}
       onCancel={onClose}
       footer={null}
@@ -151,7 +151,7 @@ export default function ProductPickerModal({ open, customer, onClose, onAdd }: P
       <div className="product-picker">
         <div className="product-picker-main">
           <div className="panel product-picker-categories">
-            <Typography.Text type="secondary">商品类别</Typography.Text>
+            <Typography.Text type="secondary">{terms.category}</Typography.Text>
             <List
               size="small"
               dataSource={categories}
@@ -181,12 +181,14 @@ export default function ProductPickerModal({ open, customer, onClose, onAdd }: P
               <Input
                 prefix={<SearchOutlined />}
                 allowClear
-                placeholder="搜索商品名或条码"
+                placeholder={`搜索${terms.product}名或条码`}
                 value={keyword}
                 onChange={(event) => setKeyword(event.target.value)}
                 style={{ width: 360 }}
               />
-              <Tag color={customer ? 'blue' : 'orange'}>{customer ? `当前客户：${customer.name}` : '请先选择客户'}</Tag>
+              <Tag color={customer ? 'blue' : 'orange'}>
+                {customer ? `当前${terms.customer}：${customer.name}` : `请先选择${terms.customer}`}
+              </Tag>
             </Space>
             <div className="ag-theme-quartz product-picker-list">
               <List
@@ -211,7 +213,7 @@ export default function ProductPickerModal({ open, customer, onClose, onAdd }: P
           </div>
         </div>
         <div className="panel product-picker-actions">
-          <Typography.Text strong className="product-picker-selected">{selected?.name ?? '未选择商品'}</Typography.Text>
+          <Typography.Text strong className="product-picker-selected">{selected?.name ?? `未选择${terms.product}`}</Typography.Text>
           <InputNumber
             min={0.01}
             value={quantity}

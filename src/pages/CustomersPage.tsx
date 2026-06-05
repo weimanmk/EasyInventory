@@ -11,12 +11,16 @@ export default function CustomersPage() {
   const { message, modal } = App.useApp();
   const navigate = useNavigate();
   const [form] = Form.useForm();
-  const { customers, setCustomers } = useAppStore();
+  const [batchForm] = Form.useForm();
+  const { customers, terms, setCustomers } = useAppStore();
   const [region, setRegion] = useState<string>();
   const [keyword, setKeyword] = useState('');
   const [editing, setEditing] = useState<CustomerDto | null>(null);
+  const [batchOpen, setBatchOpen] = useState(false);
+  const [selectedCustomerIds, setSelectedCustomerIds] = useState<number[]>([]);
   const regions = useMemo(() => uniqueValues(customers, (item) => item.region), [customers]);
   const regionOptions = useMemo(() => regions.map((item) => ({ value: item, label: item })), [regions]);
+  const isGuestCustomer = (row?: CustomerDto | null) => row?.name === terms.guestCustomer;
   const filtered = customers.filter((item) => {
     const matchRegion = !region || item.region === region;
     const matchKeyword = !keyword || item.name.includes(keyword) || item.address?.includes(keyword);
@@ -77,10 +81,35 @@ export default function CustomersPage() {
     form.resetFields();
   }
 
+  function openBatchEditor() {
+    if (selectedCustomerIds.length === 0) {
+      message.warning(`请选择${terms.customer}`);
+      return;
+    }
+    batchForm.resetFields();
+    setBatchOpen(true);
+  }
+
+  async function saveBatch() {
+    const values = await batchForm.validateFields();
+    try {
+      const result = await api.batchUpdateCustomers({
+        ids: selectedCustomerIds,
+        ...values
+      });
+      await refresh();
+      setSelectedCustomerIds([]);
+      setBatchOpen(false);
+      message.success(`已批量更新 ${result.affectedCount} 个${terms.customer}`);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '批量编辑失败');
+    }
+  }
+
   async function disable(row: CustomerDto) {
     try {
       await api.disableCustomer(row.id);
-      message.success('客户已删除');
+      message.success(`${terms.customer}已删除`);
       await refresh();
     } catch (error) {
       message.error(error instanceof Error ? error.message : '删除失败');
@@ -90,20 +119,27 @@ export default function CustomersPage() {
   return (
     <div className="page">
       <div className="page-title">
-        <Typography.Title level={2}>客户管理</Typography.Title>
-        <Button type="primary" onClick={openNewCustomer}>新增客户</Button>
+        <Typography.Title level={2}>{terms.customer}管理</Typography.Title>
+        <Space>
+          <Button disabled={selectedCustomerIds.length === 0} onClick={openBatchEditor}>批量编辑</Button>
+          <Button type="primary" onClick={openNewCustomer}>新增{terms.customer}</Button>
+        </Space>
       </div>
       <div className="toolbar panel">
-        <Select allowClear placeholder="地区" value={region} style={{ width: 160 }} options={regionOptions} onChange={setRegion} />
-        <Input allowClear placeholder="搜索客户或地址" value={keyword} onChange={(event) => setKeyword(event.target.value)} style={{ width: 260 }} />
+        <Select allowClear placeholder={terms.region} value={region} style={{ width: 160 }} options={regionOptions} onChange={setRegion} />
+        <Input allowClear placeholder={`搜索${terms.customer}或地址`} value={keyword} onChange={(event) => setKeyword(event.target.value)} style={{ width: 260 }} />
         <Button onClick={() => void refresh()}>刷新</Button>
       </div>
       <Table
         rowKey="id"
         dataSource={filtered}
+        rowSelection={{
+          selectedRowKeys: selectedCustomerIds,
+          onChange: (keys) => setSelectedCustomerIds(keys as number[])
+        }}
         columns={[
-          { title: '地区', dataIndex: 'region', width: 120 },
-          { title: '客户名称', dataIndex: 'name' },
+          { title: terms.region, dataIndex: 'region', width: 120 },
+          { title: `${terms.customer}名称`, dataIndex: 'name' },
           { title: '地址', dataIndex: 'address' },
           { title: '联系方式', dataIndex: 'phone', width: 140 },
           { title: '状态', render: (_, row) => <Tag color={row.isActive ? 'green' : 'default'}>{row.isActive ? '启用' : '停用'}</Tag>, width: 90 },
@@ -117,10 +153,10 @@ export default function CustomersPage() {
                 <Button
                   size="small"
                   danger
-                  disabled={row.name === '散客'}
+                  disabled={isGuestCustomer(row)}
                   onClick={() => modal.confirm({
-                    title: '删除该客户？',
-                    content: row.name === '散客' ? '散客是系统默认客户，不能删除。' : '客户会被停用并从常用列表隐藏，历史订单和单据不会被破坏。',
+                    title: `删除该${terms.customer}？`,
+                    content: isGuestCustomer(row) ? `${terms.guestCustomer}是系统默认${terms.customer}，不能删除。` : `${terms.customer}会被停用并从常用列表隐藏，历史订单和单据不会被破坏。`,
                     okText: '删除',
                     okButtonProps: { danger: true },
                     onOk: () => disable(row)
@@ -134,20 +170,43 @@ export default function CustomersPage() {
           }
         ]}
       />
-      <Drawer title={editing?.id ? '编辑客户' : '新增客户'} open={!!editing} onClose={closeEditor} width={420}>
+      <Drawer title={editing?.id ? `编辑${terms.customer}` : `新增${terms.customer}`} open={!!editing} onClose={closeEditor} width={420}>
         <Form form={form} layout="vertical" className="dense-form">
-          <Form.Item label="地区" name="region">
+          <Form.Item label={terms.region} name="region">
             <AutoComplete
               options={regionOptions}
-              placeholder="选择已有地区或输入新地区"
+              placeholder={`选择已有${terms.region}或输入新${terms.region}`}
               filterOption={(inputValue, option) => String(option?.value ?? '').toLowerCase().includes(inputValue.toLowerCase())}
             />
           </Form.Item>
-          <Form.Item label="客户名称" name="name" rules={[{ required: true, message: '请输入客户名称' }]}><Input disabled={editing?.name === '散客'} /></Form.Item>
+          <Form.Item label={`${terms.customer}名称`} name="name" rules={[{ required: true, message: `请输入${terms.customer}名称` }]}><Input disabled={isGuestCustomer(editing)} /></Form.Item>
           <Form.Item label="地址" name="address"><Input /></Form.Item>
           <Form.Item label="联系方式" name="phone"><Input /></Form.Item>
           <Form.Item label="备注" name="remark"><Input.TextArea rows={3} /></Form.Item>
           <Button type="primary" block onClick={() => void save()}>保存</Button>
+        </Form>
+      </Drawer>
+      <Drawer title={`批量编辑${terms.customer}（${selectedCustomerIds.length}）`} open={batchOpen} onClose={() => setBatchOpen(false)} width={420}>
+        <Form form={batchForm} layout="vertical" className="dense-form">
+          <Form.Item label={terms.region} name="region">
+            <AutoComplete
+              options={regionOptions}
+              placeholder="留空则不修改"
+              filterOption={(inputValue, option) => String(option?.value ?? '').toLowerCase().includes(inputValue.toLowerCase())}
+            />
+          </Form.Item>
+          <Form.Item label="备注" name="remark"><Input.TextArea rows={3} /></Form.Item>
+          <Form.Item label="状态" name="isActive">
+            <Select
+              allowClear
+              placeholder="留空则不修改"
+              options={[
+                { value: true, label: '启用' },
+                { value: false, label: '停用' }
+              ]}
+            />
+          </Form.Item>
+          <Button type="primary" block onClick={() => void saveBatch()}>保存批量修改</Button>
         </Form>
       </Drawer>
     </div>

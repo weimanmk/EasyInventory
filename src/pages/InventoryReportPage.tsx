@@ -8,7 +8,7 @@ import { useAppStore } from '../store/appStore';
 
 export default function InventoryReportPage() {
   const { message } = App.useApp();
-  const { products } = useAppStore();
+  const { products, terms } = useAppStore();
   const [rows, setRows] = useState<InventoryReportRowDto[]>([]);
   const [range, setRange] = useState<[string, string]>([
     dayjs().startOf('month').format('YYYY-MM-DD'),
@@ -70,7 +70,9 @@ export default function InventoryReportPage() {
       <div className="page-title">
         <div>
           <Typography.Title level={2}>进销存报表</Typography.Title>
-          <Typography.Text type="secondary">按日期、类别和关键字汇总入库、出库、赠品与当前库存</Typography.Text>
+          <Typography.Text type="secondary">
+            按日期、{terms.category}和关键字汇总入库、出库、赠品与当前库存
+          </Typography.Text>
         </div>
         <Space>
           <Button loading={exporting} onClick={() => void exportReport(false)}>导出</Button>
@@ -88,7 +90,7 @@ export default function InventoryReportPage() {
         />
         <Select
           allowClear
-          placeholder="类别"
+          placeholder={terms.category}
           value={category}
           style={{ width: 180 }}
           options={categories.map((item) => ({ value: item, label: item }))}
@@ -96,7 +98,7 @@ export default function InventoryReportPage() {
         />
         <Input
           allowClear
-          placeholder="商品名或条码"
+          placeholder={`${terms.product}名或条码`}
           value={keyword}
           onChange={(event) => setKeyword(event.target.value)}
           style={{ width: 240 }}
@@ -108,7 +110,7 @@ export default function InventoryReportPage() {
         <Card><Statistic title="出库金额" value={money(outboundAmount)} /></Card>
         <Card><Statistic title="赠品数量" value={qty(giftQuantity)} /></Card>
         <Card><Statistic title="库存价值" value={money(stockValue)} /></Card>
-        <Card><Statistic title="商品行数" value={rows.length} /></Card>
+        <Card><Statistic title={`${terms.product}行数`} value={rows.length} /></Card>
       </div>
       <Table
         rowKey="productId"
@@ -116,8 +118,8 @@ export default function InventoryReportPage() {
         dataSource={rows}
         scroll={{ x: 1180 }}
         columns={[
-          { title: '商品', dataIndex: 'productName', fixed: 'left', width: 220 },
-          { title: '类别', dataIndex: 'category', width: 120 },
+          { title: terms.product, dataIndex: 'productName', fixed: 'left', width: 220 },
+          { title: terms.category, dataIndex: 'category', width: 120 },
           { title: '条码', dataIndex: 'barcode', width: 150 },
           { title: '入库数量', render: (_, row) => qty(row.inboundQuantity), align: 'right', width: 110 },
           { title: '入库金额', render: (_, row) => money(row.inboundAmount), align: 'right', width: 120 },

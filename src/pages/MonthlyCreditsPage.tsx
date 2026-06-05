@@ -1,4 +1,4 @@
-import { App, Button, Select, Space, Table, Tag, Typography } from 'antd';
+import { Alert, App, Button, Select, Space, Table, Tag, Typography } from 'antd';
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api/inventory';
 import { money, uniqueValues } from '../shared/format';
@@ -15,7 +15,7 @@ const statusMap: Record<string, { label: string; color: string }> = {
 
 export default function MonthlyCreditsPage() {
   const { message, modal } = App.useApp();
-  const { customers, products } = useAppStore();
+  const { customers, products, terms, features } = useAppStore();
   const [rows, setRows] = useState<MonthlyCreditDto[]>([]);
   const [customerId, setCustomerId] = useState<number>();
   const [category, setCategory] = useState<string>();
@@ -23,6 +23,10 @@ export default function MonthlyCreditsPage() {
   const categories = useMemo(() => uniqueValues(products, (item) => item.category), [products]);
 
   async function load() {
+    if (!features.monthlyCredit) {
+      setRows([]);
+      return;
+    }
     try {
       setRows(await api.monthlyCredits({ customerId, category, status }));
     } catch (error) {
@@ -32,14 +36,24 @@ export default function MonthlyCreditsPage() {
 
   useEffect(() => {
     void load();
-  }, []);
+  }, [features.monthlyCredit]);
 
   return (
     <div className="page">
-      <div className="page-title"><Typography.Title level={2}>月费账本</Typography.Title></div>
+      <div className="page-title"><Typography.Title level={2}>{terms.credit}账本</Typography.Title></div>
+      {!features.monthlyCredit && (
+        <Alert
+          type="info"
+          showIcon
+          message={`${terms.credit}功能已关闭`}
+          description={`可以在系统设置的功能开关中重新开启，历史${terms.credit}数据会保留。`}
+        />
+      )}
+      {features.monthlyCredit && (
+        <>
       <div className="toolbar panel">
-        <Select allowClear showSearch optionFilterProp="label" placeholder="客户" style={{ width: 220 }} options={customers.map((item) => ({ value: item.id, label: item.name }))} onChange={setCustomerId} />
-        <Select allowClear placeholder="类别" style={{ width: 160 }} options={categories.map((item) => ({ value: item, label: item }))} onChange={setCategory} />
+        <Select allowClear showSearch optionFilterProp="label" placeholder={terms.customer} style={{ width: 220 }} options={customers.map((item) => ({ value: item.id, label: item.name }))} onChange={setCustomerId} />
+        <Select allowClear placeholder={terms.category} style={{ width: 160 }} options={categories.map((item) => ({ value: item, label: item }))} onChange={setCategory} />
         <Select allowClear placeholder="状态" style={{ width: 140 }} options={Object.entries(statusMap).map(([value, item]) => ({ value, label: item.label }))} onChange={setStatus} />
         <Button onClick={() => void load()}>查询</Button>
       </div>
@@ -48,8 +62,8 @@ export default function MonthlyCreditsPage() {
         dataSource={rows}
         columns={[
           { title: '来源订单', dataIndex: 'sourceOrderNo' },
-          { title: '客户', dataIndex: 'customerName' },
-          { title: '类别', dataIndex: 'category', width: 100 },
+          { title: terms.customer, dataIndex: 'customerName' },
+          { title: terms.category, dataIndex: 'category', width: 100 },
           { title: '生成金额', render: (_, row) => money(row.amount), align: 'right' },
           { title: '已使用', render: (_, row) => money(row.usedAmount), align: 'right' },
           { title: '剩余', render: (_, row) => money(row.remainingAmount), align: 'right' },
@@ -60,13 +74,15 @@ export default function MonthlyCreditsPage() {
             title: '操作',
             render: (_, row) => (
               <Space>
-                <Button size="small" disabled={row.status === 'closed'} onClick={() => modal.confirm({ title: '关闭该月费？', onOk: async () => { await api.closeMonthlyCredit(row.id); await load(); } })}>关闭</Button>
-                <Button size="small" danger disabled={row.status === 'voided'} onClick={() => modal.confirm({ title: '作废该月费？', onOk: async () => { await api.voidMonthlyCredit(row.id); await load(); } })}>作废</Button>
+                <Button size="small" disabled={row.status === 'closed'} onClick={() => modal.confirm({ title: `关闭该${terms.credit}？`, onOk: async () => { await api.closeMonthlyCredit(row.id); await load(); } })}>关闭</Button>
+                <Button size="small" danger disabled={row.status === 'voided'} onClick={() => modal.confirm({ title: `作废该${terms.credit}？`, onOk: async () => { await api.voidMonthlyCredit(row.id); await load(); } })}>作废</Button>
               </Space>
             )
           }
         ]}
       />
+      </>
+      )}
     </div>
   );
 }

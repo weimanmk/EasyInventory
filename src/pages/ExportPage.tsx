@@ -1,32 +1,68 @@
 import { App, Button, Card, DatePicker, Input, Select, Space, Typography } from 'antd';
 import dayjs from 'dayjs';
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api/inventory';
 import { uniqueValues } from '../shared/format';
 import { useAppStore } from '../store/appStore';
 
-const exportTypes = [
-  { value: 'products', label: '商品资料' },
-  { value: 'customers', label: '客户资料' },
-  { value: 'inbounds', label: '入库记录' },
-  { value: 'monthly_credits', label: '月费账本' },
-  { value: 'profits', label: '利润报表' },
-  { value: 'inventory_report', label: '进销存报表' }
+const productRankingOptions = [
+  { value: 'sales_quantity', label: '销量' },
+  { value: 'sales_amount', label: '销售额' },
+  { value: 'profit_amount', label: '利润' },
+  { value: 'gift_cost_amount', label: '赠品成本' }
+];
+
+const customerRankingOptions = [
+  { value: 'sales_amount', label: '销售额' },
+  { value: 'profit_amount', label: '利润' },
+  { value: 'balance_amount', label: '欠款' }
+];
+
+const defaultExportRange = (): [string, string] => [
+  dayjs().startOf('month').format('YYYY-MM-DD'),
+  dayjs().format('YYYY-MM-DD')
 ];
 
 export default function ExportPage() {
   const { message } = App.useApp();
-  const { customers, products } = useAppStore();
+  const { customers, products, terms, features } = useAppStore();
   const [exportType, setExportType] = useState('products');
-  const [range, setRange] = useState<[string, string]>();
+  const [range, setRange] = useState<[string, string] | undefined>(defaultExportRange);
   const [customerId, setCustomerId] = useState<number>();
   const [category, setCategory] = useState<string>();
   const [status, setStatus] = useState<string>();
+  const [rankBy, setRankBy] = useState('profit_amount');
   const [keyword, setKeyword] = useState('');
   const [exporting, setExporting] = useState(false);
   const categories = uniqueValues(products, (item) => item.category);
+  const rankingOptions = exportType === 'customer_analysis' ? customerRankingOptions : productRankingOptions;
+  const exportTypes = useMemo(() => [
+    { value: 'products', label: `${terms.product}资料` },
+    { value: 'customers', label: `${terms.customer}资料` },
+    { value: 'inbounds', label: '入库记录' },
+    ...(features.monthlyCredit ? [{ value: 'monthly_credits', label: `${terms.credit}账本` }] : []),
+    { value: 'profits', label: '利润报表' },
+    { value: 'inventory_report', label: '进销存报表' },
+    ...(features.productRanking ? [{ value: 'product_ranking', label: `${terms.product}经营排行` }] : []),
+    ...(features.customerAnalysis ? [{ value: 'customer_analysis', label: `${terms.customer}经营分析` }] : []),
+    { value: 'customer_statement', label: `${terms.customer}对账单` }
+  ], [features, terms]);
+
+  useEffect(() => {
+    if (!exportTypes.some((item) => item.value === exportType)) {
+      setExportType('products');
+    }
+  }, [exportType, exportTypes]);
 
   async function exportData(openAfter = false) {
+    if (exportType === 'customer_statement' && !customerId) {
+      message.warning(`导出${terms.customer}对账单必须选择${terms.customer}`);
+      return;
+    }
+    if (exportType === 'customer_statement' && !range) {
+      message.warning(`导出${terms.customer}对账单必须选择日期范围`);
+      return;
+    }
     setExporting(true);
     try {
       const path = await api.exportData({
@@ -35,6 +71,7 @@ export default function ExportPage() {
         endDate: range?.[1],
         customerId,
         category,
+        rankBy,
         status,
         keyword
       });
@@ -59,33 +96,48 @@ export default function ExportPage() {
       </div>
       <Card>
         <Space wrap size={12}>
-          <Select style={{ width: 160 }} value={exportType} options={exportTypes} onChange={setExportType} />
+          <Select
+            style={{ width: 180 }}
+            value={exportType}
+            options={exportTypes}
+            onChange={(value) => {
+              setExportType(value);
+              setRankBy(value === 'customer_analysis' ? 'sales_amount' : 'profit_amount');
+            }}
+          />
           <DatePicker.RangePicker
             disabled={exportType === 'products' || exportType === 'customers'}
-            defaultValue={[dayjs().startOf('month'), dayjs()]}
+            value={range ? [dayjs(range[0]), dayjs(range[1])] : undefined}
             onChange={(values) => setRange(values ? [values[0]!.format('YYYY-MM-DD'), values[1]!.format('YYYY-MM-DD')] : undefined)}
           />
           <Select
             allowClear
             showSearch
             optionFilterProp="label"
-            placeholder="客户"
-            disabled={exportType === 'products' || exportType === 'customers' || exportType === 'inbounds' || exportType === 'inventory_report'}
+            placeholder={terms.customer}
+            disabled={
+              exportType === 'products' ||
+              exportType === 'customers' ||
+              exportType === 'inbounds' ||
+              exportType === 'inventory_report' ||
+              exportType === 'product_ranking' ||
+              exportType === 'customer_analysis'
+            }
             style={{ width: 220 }}
             options={customers.map((item) => ({ value: item.id, label: item.name }))}
             onChange={setCustomerId}
           />
           <Select
             allowClear
-            placeholder="类别"
-            disabled={exportType === 'customers'}
+            placeholder={terms.category}
+            disabled={exportType === 'customers' || exportType === 'customer_statement'}
             style={{ width: 160 }}
             options={categories.map((item) => ({ value: item, label: item }))}
             onChange={setCategory}
           />
           <Select
             allowClear
-            placeholder="月费状态"
+            placeholder={`${terms.credit}状态`}
             disabled={exportType !== 'monthly_credits'}
             style={{ width: 140 }}
             options={[
@@ -96,6 +148,14 @@ export default function ExportPage() {
               { value: 'voided', label: '作废' }
             ]}
             onChange={setStatus}
+          />
+          <Select
+            placeholder="排行指标"
+            disabled={!['product_ranking', 'customer_analysis'].includes(exportType)}
+            value={rankBy}
+            style={{ width: 140 }}
+            options={rankingOptions}
+            onChange={setRankBy}
           />
           <Input
             allowClear

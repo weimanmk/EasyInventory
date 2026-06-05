@@ -1,15 +1,38 @@
 import { callCommand } from './tauri';
 import type {
   AppStatusDto,
+  AuditLogDto,
+  BatchUpdateResultDto,
   BackupDto,
   CustomerBalanceDto,
+  CustomerAnalysisDto,
+  CustomerAnalysisRequest,
   CustomerDto,
+  CustomerProductRuleImportPreviewDto,
+  CustomerProductRuleImportResultDto,
   CustomerProductRuleDto,
+  CustomerStatementDto,
+  CustomerStatementRequest,
   DailyProfitSummary,
+  DataSelfCheckDto,
+  DiagnosticPackageDto,
+  DiagnosticSummaryDto,
+  DocumentTemplateDto,
+  FeatureFlagsDto,
+  GenericImportHeaderRequest,
+  GenericImportHeadersDto,
+  GenericImportPreviewDto,
+  GenericImportReportRequest,
+  GenericImportRequest,
+  GenericImportResultDto,
+  ImportMappingDto,
   DocumentDto,
+  IndustryTemplateDto,
   ImportResult,
+  InventoryAdjustmentDto,
   InventoryReportRowDto,
   InboundRecordDto,
+  MerchantProfileDto,
   MonthlyCreditDto,
   OrderDetailDto,
   OrderDto,
@@ -17,10 +40,18 @@ import type {
   ProfitAnalyticsRequest,
   ProfitAnalyticsResponse,
   PrintStatusDto,
+  ProductRankingRequest,
+  ProductRankingRowDto,
   ProductDto,
   QuotePreviewDto,
+  RestoreBackupResultDto,
   SettingDto,
-  SupplierDto
+  SetupStatusDto,
+  StocktakeRecordDto,
+  SupplierDto,
+  SupplierPurchaseLedgerDto,
+  SupplierPurchaseLedgerRequest,
+  TermSettingsDto
 } from '../shared/types';
 
 export const api = {
@@ -29,15 +60,23 @@ export const api = {
   createProduct: (payload: Record<string, unknown>) => callCommand<ProductDto>('create_product', { payload }),
   updateProduct: (id: number, payload: Record<string, unknown>) => callCommand<ProductDto>('update_product', { id, payload }),
   disableProduct: (id: number) => callCommand<boolean>('disable_product', { id }),
+  batchUpdateProducts: (payload: Record<string, unknown>) =>
+    callCommand<BatchUpdateResultDto>('batch_update_products', { payload }),
   findProductByBarcode: (barcode: string) => callCommand<ProductDto | null>('find_product_by_barcode', { barcode }),
   customers: (filter?: Record<string, unknown>) => callCommand<CustomerDto[]>('list_customers', { filter }),
   createCustomer: (payload: Record<string, unknown>) => callCommand<CustomerDto>('create_customer', { payload }),
   updateCustomer: (id: number, payload: Record<string, unknown>) => callCommand<CustomerDto>('update_customer', { id, payload }),
   disableCustomer: (id: number) => callCommand<boolean>('disable_customer', { id }),
+  batchUpdateCustomers: (payload: Record<string, unknown>) =>
+    callCommand<BatchUpdateResultDto>('batch_update_customers', { payload }),
   suppliers: (filter?: Record<string, unknown>) => callCommand<SupplierDto[]>('list_suppliers', { filter }),
   createSupplier: (payload: Record<string, unknown>) => callCommand<SupplierDto>('create_supplier', { payload }),
   updateSupplier: (id: number, payload: Record<string, unknown>) => callCommand<SupplierDto>('update_supplier', { id, payload }),
   disableSupplier: (id: number) => callCommand<boolean>('disable_supplier', { id }),
+  batchUpdateSuppliers: (payload: Record<string, unknown>) =>
+    callCommand<BatchUpdateResultDto>('batch_update_suppliers', { payload }),
+  supplierPurchaseLedger: (filter?: SupplierPurchaseLedgerRequest) =>
+    callCommand<SupplierPurchaseLedgerDto>('get_supplier_purchase_ledger', { filter }),
   createInbound: (payload: Record<string, unknown>) => callCommand('create_inbound', { payload }),
   inboundRecords: (filter?: Record<string, unknown>) => callCommand<InboundRecordDto[]>('list_inbound_records', { filter }),
   previewQuote: (payload: Record<string, unknown>) => callCommand<QuotePreviewDto>('preview_quote', { payload }),
@@ -45,6 +84,7 @@ export const api = {
   order: (id: number) => callCommand<OrderDetailDto>('get_order', { id }),
   orders: (filter?: Record<string, unknown>) => callCommand<OrderDto[]>('list_orders', { filter }),
   exportOrder: (orderId: number) => callCommand<string>('export_order_document', { orderId }),
+  exportOrderPdf: (orderId: number) => callCommand<string>('export_order_pdf_document', { orderId }),
   printOrder: (orderId: number) => callCommand<string>('print_order_document', { orderId }),
   printOrderWithOptions: (orderId: number, payload?: Record<string, unknown>) =>
     callCommand<PrintStatusDto>('print_order_document_with_options', { orderId, payload }),
@@ -53,6 +93,10 @@ export const api = {
   saveRule: (payload: Record<string, unknown>) => callCommand<number>('save_customer_product_rule', { payload }),
   disableRule: (id: number) => callCommand<boolean>('disable_customer_product_rule', { id }),
   deleteRule: (id: number) => callCommand<boolean>('delete_customer_product_rule', { id }),
+  previewRuleImport: (filePath: string) =>
+    callCommand<CustomerProductRuleImportPreviewDto>('preview_customer_product_rule_import', { filePath }),
+  importRules: (filePath: string) =>
+    callCommand<CustomerProductRuleImportResultDto>('import_customer_product_rules', { filePath }),
   monthlyCredits: (filter?: Record<string, unknown>) => callCommand<MonthlyCreditDto[]>('list_monthly_credits', { filter }),
   availableMonthlyCredits: (customerId: number, category: string, orderDate: string) =>
     callCommand<MonthlyCreditDto[]>('get_available_monthly_credits', { customerId, category, orderDate }),
@@ -62,25 +106,75 @@ export const api = {
   paymentRecords: (filter?: Record<string, unknown>) => callCommand<PaymentRecordDto[]>('list_payment_records', { filter }),
   createPayment: (payload: Record<string, unknown>) => callCommand<PaymentRecordDto>('create_payment', { payload }),
   voidPayment: (id: number) => callCommand<PaymentRecordDto>('void_payment', { id }),
+  customerStatement: (request: CustomerStatementRequest) =>
+    callCommand<CustomerStatementDto>('get_customer_statement', { request }),
+  exportCustomerStatementPdf: (request: CustomerStatementRequest) =>
+    callCommand<string>('export_customer_statement_pdf', { request }),
   dailyProfit: (date: string) => callCommand<DailyProfitSummary>('get_daily_profit_summary', { date }),
   profitAnalytics: (request: ProfitAnalyticsRequest) =>
     callCommand<ProfitAnalyticsResponse>('get_profit_analytics', { request }),
   profitRecords: (filter?: Record<string, unknown>) => callCommand<OrderDto[]>('list_profit_records', { filter }),
   inventoryReport: (filter?: Record<string, unknown>) => callCommand<InventoryReportRowDto[]>('list_inventory_report', { filter }),
+  productRanking: (request: ProductRankingRequest) =>
+    callCommand<ProductRankingRowDto[]>('get_product_ranking', { request }),
+  customerAnalysis: (request: CustomerAnalysisRequest) =>
+    callCommand<CustomerAnalysisDto>('get_customer_analysis', { request }),
   documents: (filter?: Record<string, unknown>) => callCommand<DocumentDto[]>('list_documents', { filter }),
   openDocument: (documentId: number) => callCommand<string>('open_document', { documentId }),
   exportDocument: (orderId: number) => callCommand<string>('export_document', { orderId }),
+  exportDocumentPdf: (orderId: number) => callCommand<string>('export_document_pdf', { orderId }),
   printDocument: (documentId: number, payload?: Record<string, unknown>) =>
     callCommand<PrintStatusDto>('print_document', { documentId, payload }),
   exportData: (payload: Record<string, unknown>) => callCommand<string>('export_data', { payload }),
   openExportsFolder: () => callCommand<string>('open_exports_folder'),
   openLogsFolder: () => callCommand<string>('open_logs_folder'),
+  runDataSelfCheck: () => callCommand<DataSelfCheckDto>('run_data_self_check'),
+  exportDataSelfCheck: () => callCommand<string>('export_data_self_check'),
+  diagnosticSummary: () => callCommand<DiagnosticSummaryDto>('get_diagnostic_summary'),
+  exportDiagnosticPackage: () => callCommand<DiagnosticPackageDto>('export_diagnostic_package'),
   importExcel: (filePath: string) => callCommand<ImportResult>('import_excel', { filePath }),
   importStatus: () => callCommand<ImportResult | null>('get_import_status'),
   backup: () => callCommand<string>('create_backup'),
   backups: () => callCommand<BackupDto[]>('list_backups'),
   openBackupFolder: () => callCommand<string>('open_backup_folder'),
+  restoreBackup: (backupId: number) => callCommand<RestoreBackupResultDto>('restore_backup', { backupId }),
+  createInventoryAdjustment: (payload: Record<string, unknown>) =>
+    callCommand<InventoryAdjustmentDto>('create_inventory_adjustment', { payload }),
+  inventoryAdjustments: (filter?: Record<string, unknown>) =>
+    callCommand<InventoryAdjustmentDto[]>('list_inventory_adjustments', { filter }),
+  voidInventoryAdjustment: (id: number, payload?: Record<string, unknown>) =>
+    callCommand<InventoryAdjustmentDto>('void_inventory_adjustment', { id, payload }),
+  createStocktake: (payload: Record<string, unknown>) => callCommand<StocktakeRecordDto>('create_stocktake', { payload }),
+  stocktakes: (filter?: Record<string, unknown>) => callCommand<StocktakeRecordDto[]>('list_stocktakes', { filter }),
+  voidStocktake: (id: number, payload?: Record<string, unknown>) =>
+    callCommand<StocktakeRecordDto>('void_stocktake', { id, payload }),
+  auditLogs: (filter?: Record<string, unknown>) => callCommand<AuditLogDto[]>('list_audit_logs', { filter }),
   settings: () => callCommand<SettingDto[]>('list_settings'),
   saveSettings: (payload: Record<string, unknown>) => callCommand<boolean>('save_settings', { payload }),
+  setupStatus: () => callCommand<SetupStatusDto>('get_setup_status'),
+  completeSetup: (request: Record<string, unknown>) => callCommand<boolean>('complete_setup', { request }),
+  merchantProfile: () => callCommand<MerchantProfileDto>('get_merchant_profile'),
+  saveMerchantProfile: (profile: MerchantProfileDto) => callCommand<boolean>('save_merchant_profile', { profile }),
+  termSettings: () => callCommand<TermSettingsDto>('get_term_settings'),
+  saveTermSettings: (terms: TermSettingsDto) => callCommand<boolean>('save_term_settings', { terms }),
+  featureFlags: () => callCommand<FeatureFlagsDto>('get_feature_flags'),
+  saveFeatureFlags: (flags: FeatureFlagsDto) => callCommand<boolean>('save_feature_flags', { flags }),
+  industryTemplates: () => callCommand<IndustryTemplateDto[]>('list_industry_templates'),
+  applyIndustryTemplate: (request: Record<string, unknown>) =>
+    callCommand<IndustryTemplateDto>('apply_industry_template', { request }),
+  documentTemplates: () => callCommand<DocumentTemplateDto[]>('list_document_templates'),
+  applyDocumentTemplate: (templateId: string) => callCommand<boolean>('apply_document_template', { templateId }),
+  previewGenericImportHeaders: (request: GenericImportHeaderRequest) =>
+    callCommand<GenericImportHeadersDto>('preview_generic_import_headers', { request }),
+  previewGenericImport: (request: GenericImportRequest) =>
+    callCommand<GenericImportPreviewDto>('preview_generic_import', { request }),
+  confirmGenericImport: (request: GenericImportRequest) =>
+    callCommand<GenericImportResultDto>('confirm_generic_import', { request }),
+  exportGenericImportReport: (request: GenericImportReportRequest) =>
+    callCommand<string>('export_generic_import_report', { request }),
+  downloadImportTemplate: (importType: GenericImportRequest['importType']) =>
+    callCommand<string>('download_import_template', { importType }),
+  saveImportMapping: (mapping: ImportMappingDto) => callCommand<boolean>('save_import_mapping', { mapping }),
+  importMappings: (importType?: string) => callCommand<ImportMappingDto[]>('list_import_mappings', { importType }),
   printers: () => callCommand<string[]>('list_printers')
 };

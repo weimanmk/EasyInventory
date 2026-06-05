@@ -66,9 +66,27 @@ function amountTooltip(value: unknown) {
   return money(Number(value ?? 0));
 }
 
+function optionalMoney(value?: number) {
+  return value === undefined ? '-' : money(value);
+}
+
+function optionalRate(value?: number) {
+  return value === undefined ? '-' : `${value.toFixed(2)}%`;
+}
+
+function comparisonTitle(period: ProfitPeriod) {
+  if (period === 'day') {
+    return '环比上一日';
+  }
+  if (period === 'month') {
+    return '同比去年同月';
+  }
+  return '同比上一年';
+}
+
 export default function ProfitPage() {
   const { message, modal } = App.useApp();
-  const { products, customers } = useAppStore();
+  const { products, customers, terms, features } = useAppStore();
   const [period, setPeriod] = useState<ProfitPeriod>('day');
   const [range, setRange] = useState<DateRange>(() => defaultRange('day'));
   const [customerId, setCustomerId] = useState<number>();
@@ -132,7 +150,7 @@ export default function ProfitPage() {
   function voidOrder(row: OrderDto) {
     modal.confirm({
       title: `作废订单 ${row.orderNo}？`,
-      content: '作废后会回滚库存流水和月费记录。',
+      content: `作废后会回滚库存流水${features.monthlyCredit ? `和${terms.credit}记录` : ''}。`,
       okText: '作废',
       okButtonProps: { danger: true },
       onOk: async () => {
@@ -256,7 +274,7 @@ export default function ProfitPage() {
           <Select
             allowClear
             showSearch
-            placeholder="全部客户"
+            placeholder={`全部${terms.customer}`}
             value={customerId}
             optionFilterProp="label"
             onChange={setCustomerId}
@@ -265,7 +283,7 @@ export default function ProfitPage() {
           <Select
             allowClear
             showSearch
-            placeholder="全部类别"
+            placeholder={`全部${terms.category}`}
             value={category}
             optionFilterProp="label"
             onChange={setCategory}
@@ -276,8 +294,8 @@ export default function ProfitPage() {
 
       <div className="stat-grid">
         <Card><Statistic title="出库单数" value={summary?.orderCount ?? 0} /></Card>
-        <Card><Statistic title="商品销售额" value={compactMoney(summary?.productSalesAmount)} prefix="¥" /></Card>
-        <Card><Statistic title="客户实收" value={compactMoney(summary?.customerPayableAmount)} prefix="¥" /></Card>
+        <Card><Statistic title={`${terms.product}销售额`} value={compactMoney(summary?.productSalesAmount)} prefix="¥" /></Card>
+        <Card><Statistic title={`${terms.customer}实收`} value={compactMoney(summary?.customerPayableAmount)} prefix="¥" /></Card>
         <Card><Statistic title="成本" value={compactMoney(summary?.costAmount)} prefix="¥" /></Card>
         <Card><Statistic title="利润" value={compactMoney(summary?.profitAmount)} prefix="¥" valueStyle={{ color: '#16a34a' }} /></Card>
       </div>
@@ -294,7 +312,7 @@ export default function ProfitPage() {
           <EChart option={barOption} empty={trendRows.length === 0} />
         </Card>
         <Card
-          title={breakdownMode === 'category' ? '类别占比' : '客户占比'}
+          title={breakdownMode === 'category' ? `${terms.category}占比` : `${terms.customer}占比`}
           className="chart-card"
           extra={
             <Space>
@@ -302,8 +320,8 @@ export default function ProfitPage() {
                 size="small"
                 value={breakdownMode}
                 options={[
-                  { label: '类别', value: 'category' },
-                  { label: '客户', value: 'customer' }
+                  { label: terms.category, value: 'category' },
+                  { label: terms.customer, value: 'customer' }
                 ]}
                 onChange={(value) => setBreakdownMode(value as BreakdownMode)}
               />
@@ -323,6 +341,29 @@ export default function ProfitPage() {
         </Card>
       </div>
 
+      <Card title={`同比/环比分析：${comparisonTitle(period)}`}>
+        <Table
+          rowKey="period"
+          size="small"
+          pagination={false}
+          loading={loading}
+          dataSource={trendRows}
+          scroll={{ x: 980 }}
+          columns={[
+            { title: '周期', dataIndex: 'period', fixed: 'left', width: 120 },
+            { title: '对比周期', dataIndex: 'comparisonPeriod', width: 120 },
+            { title: '销售额', render: (_, row) => money(row.productSalesAmount), align: 'right', width: 120 },
+            { title: '对比销售额', render: (_, row) => optionalMoney(row.comparisonSalesAmount), align: 'right', width: 130 },
+            { title: '销售额差值', render: (_, row) => optionalMoney(row.salesChangeAmount), align: 'right', width: 130 },
+            { title: '销售额增长率', render: (_, row) => optionalRate(row.salesChangeRate), align: 'right', width: 130 },
+            { title: '利润', render: (_, row) => money(row.profitAmount), align: 'right', width: 120 },
+            { title: '对比利润', render: (_, row) => optionalMoney(row.comparisonProfitAmount), align: 'right', width: 120 },
+            { title: '利润差值', render: (_, row) => optionalMoney(row.profitChangeAmount), align: 'right', width: 120 },
+            { title: '利润增长率', render: (_, row) => optionalRate(row.profitChangeRate), align: 'right', width: 120 }
+          ]}
+        />
+      </Card>
+
       <Table
         rowKey="id"
         loading={loading}
@@ -330,11 +371,13 @@ export default function ProfitPage() {
         columns={[
           { title: '日期', dataIndex: 'orderDate', width: 110 },
           { title: '单号', dataIndex: 'orderNo' },
-          { title: '客户', dataIndex: 'customerName' },
+          { title: terms.customer, dataIndex: 'customerName' },
           { title: '销售额', render: (_, row) => money(row.totals.productSalesAmount), align: 'right' },
           { title: '实收', render: (_, row) => money(row.totals.customerPayableAmount), align: 'right' },
           { title: '折现', render: (_, row) => money(row.totals.directDiscountAmount), align: 'right' },
-          { title: '月费抵扣', render: (_, row) => money(row.totals.monthlyCreditUsed), align: 'right' },
+          ...(features.monthlyCredit
+            ? [{ title: `${terms.credit}抵扣`, render: (_: unknown, row: OrderDto) => money(row.totals.monthlyCreditUsed), align: 'right' as const }]
+            : []),
           { title: '成本', render: (_, row) => money(row.totals.costAmount), align: 'right' },
           { title: '利润', render: (_, row) => money(row.totals.profitAmount), align: 'right' },
           {

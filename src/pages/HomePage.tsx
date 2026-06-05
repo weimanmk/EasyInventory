@@ -26,7 +26,7 @@ export default function HomePage() {
   const [orderDetail, setOrderDetail] = useState<OrderDetailDto>();
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
-  const { products, setProductFilter } = useAppStore();
+  const { products, terms, features, setProductFilter } = useAppStore();
   const lowStockCount = products.filter((item) => item.currentStock <= item.safetyStock).length;
 
   useEffect(() => {
@@ -72,22 +72,31 @@ export default function HomePage() {
       <div className="quick-grid">
         <Link to="/outbound"><Button className="quick-button" type="primary" block icon={<ShoppingCartOutlined />}>快速出库</Button></Link>
         <Link to="/inbound"><Button className="quick-button" block icon={<InboxOutlined />}>入库</Button></Link>
-        <Link to="/products"><Button className="quick-button" block icon={<ProductOutlined />}>商品库存</Button></Link>
-        <Link to="/rules"><Button className="quick-button" block icon={<TagsOutlined />}>客户规则</Button></Link>
-        <Link to="/customers"><Button className="quick-button" block icon={<TeamOutlined />}>客户管理</Button></Link>
+        <Link to="/products"><Button className="quick-button" block icon={<ProductOutlined />}>{terms.product}库存</Button></Link>
+        {features.customerRules && (
+          <Link to="/rules"><Button className="quick-button" block icon={<TagsOutlined />}>{terms.rule}</Button></Link>
+        )}
+        <Link to="/customers"><Button className="quick-button" block icon={<TeamOutlined />}>{terms.customer}管理</Button></Link>
         <Link to="/suppliers"><Button className="quick-button" block icon={<TeamOutlined />}>供应商管理</Button></Link>
-        <Link to="/credits"><Button className="quick-button" block icon={<WalletOutlined />}>月费账本</Button></Link>
-        <Link to="/receivables"><Button className="quick-button" block icon={<WalletOutlined />}>欠款收款</Button></Link>
+        {features.supplierLedger && (
+          <Link to="/supplier-ledger"><Button className="quick-button" block icon={<BarChartOutlined />}>供应商采购台账</Button></Link>
+        )}
+        {features.monthlyCredit && (
+          <Link to="/credits"><Button className="quick-button" block icon={<WalletOutlined />}>{terms.credit}账本</Button></Link>
+        )}
+        {features.receivables && (
+          <Link to="/receivables"><Button className="quick-button" block icon={<WalletOutlined />}>欠款收款</Button></Link>
+        )}
         <Link to="/profit"><Button className="quick-button" block icon={<BarChartOutlined />}>利润统计</Button></Link>
         <Link to="/inventory-report"><Button className="quick-button" block icon={<BarChartOutlined />}>进销存报表</Button></Link>
       </div>
       <div className="stat-grid">
         <Card><Statistic title="今日出库单数" value={summary?.orderCount ?? 0} /></Card>
-        <Card><Statistic title="今日商品销售额" value={money(summary?.productSalesAmount)} /></Card>
-        <Card><Statistic title="今日客户实收" value={money(summary?.customerPayableAmount)} /></Card>
+        <Card><Statistic title={`今日${terms.product}销售额`} value={money(summary?.productSalesAmount)} /></Card>
+        <Card><Statistic title={`今日${terms.customer}实收`} value={money(summary?.customerPayableAmount)} /></Card>
         <Card><Statistic title="今日利润" value={money(summary?.profitAmount)} valueStyle={{ color: '#16a34a' }} /></Card>
         <Link to="/products" onClick={() => setProductFilter({ onlyLowStock: true })}>
-          <Card className="clickable-card"><Statistic title="低库存商品" value={lowStockCount} valueStyle={{ color: lowStockCount > 0 ? '#d4380d' : '#16a34a' }} /></Card>
+          <Card className="clickable-card"><Statistic title={`低库存${terms.product}`} value={lowStockCount} valueStyle={{ color: lowStockCount > 0 ? '#d4380d' : '#16a34a' }} /></Card>
         </Link>
       </div>
       <Row gutter={14}>
@@ -113,7 +122,7 @@ export default function HomePage() {
               })}
               columns={[
                 { title: '单号', dataIndex: 'orderNo' },
-                { title: '客户', dataIndex: 'customerName' },
+                { title: terms.customer, dataIndex: 'customerName' },
                 { title: '实收', render: (_, row) => money(row.totals.customerPayableAmount), align: 'right' },
                 {
                   title: '操作',
@@ -145,7 +154,7 @@ export default function HomePage() {
               dataSource={inbounds}
               pagination={false}
               columns={[
-                { title: '商品', dataIndex: 'productName' },
+                { title: terms.product, dataIndex: 'productName' },
                 { title: '数量', dataIndex: 'quantity', align: 'right' },
                 { title: '金额', render: (_, row) => money(row.amount), align: 'right' }
               ]}
@@ -173,20 +182,22 @@ export default function HomePage() {
           title={() => orderDetail ? (
             <Space direction="vertical" size={12} style={{ width: '100%' }}>
               <Descriptions size="small" column={2} bordered>
-                <Descriptions.Item label="客户">{orderDetail.order.customerName}</Descriptions.Item>
+                <Descriptions.Item label={terms.customer}>{orderDetail.order.customerName}</Descriptions.Item>
                 <Descriptions.Item label="日期">{orderDetail.order.orderDate}</Descriptions.Item>
                 <Descriptions.Item label="地址" span={2}>{orderDetail.order.customerAddress || '-'}</Descriptions.Item>
-                <Descriptions.Item label="商品销售额">{money(orderDetail.order.totals.productSalesAmount)}</Descriptions.Item>
-                <Descriptions.Item label="客户实收">{money(orderDetail.order.totals.customerPayableAmount)}</Descriptions.Item>
+                <Descriptions.Item label={`${terms.product}销售额`}>{money(orderDetail.order.totals.productSalesAmount)}</Descriptions.Item>
+                <Descriptions.Item label={`${terms.customer}实收`}>{money(orderDetail.order.totals.customerPayableAmount)}</Descriptions.Item>
                 <Descriptions.Item label="折现">{money(orderDetail.order.totals.directDiscountAmount)}</Descriptions.Item>
-                <Descriptions.Item label="生成月费">{money(orderDetail.order.totals.brandSubsidyAmount)}</Descriptions.Item>
+                {features.monthlyCredit && (
+                  <Descriptions.Item label={`生成${terms.credit}`}>{money(orderDetail.order.totals.brandSubsidyAmount)}</Descriptions.Item>
+                )}
               </Descriptions>
               {orderDetail.order.remark ? <Typography.Text type="secondary">备注：{orderDetail.order.remark}</Typography.Text> : null}
             </Space>
           ) : null}
           columns={[
-            { title: '商品', dataIndex: 'productName', ellipsis: true },
-            { title: '类别', dataIndex: 'category', width: 110, ellipsis: true },
+            { title: terms.product, dataIndex: 'productName', ellipsis: true },
+            { title: terms.category, dataIndex: 'category', width: 110, ellipsis: true },
             { title: '数量', dataIndex: 'quantity', align: 'right', width: 90 },
             { title: '单价', render: (_, row) => money(row.unitPrice), align: 'right', width: 100 },
             { title: '金额', render: (_, row) => money(row.amount), align: 'right', width: 100 },

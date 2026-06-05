@@ -9,7 +9,7 @@ import { useAppStore } from '../store/appStore';
 export default function InboundPage() {
   const { message } = App.useApp();
   const [form] = Form.useForm();
-  const { products, setProducts } = useAppStore();
+  const { products, setProducts, terms } = useAppStore();
   const [category, setCategory] = useState<string>();
   const [records, setRecords] = useState<InboundRecordDto[]>([]);
   const [suppliers, setSuppliers] = useState<SupplierDto[]>([]);
@@ -54,7 +54,7 @@ export default function InboundPage() {
       <div className="page-title">
         <div>
           <Typography.Title level={2}>入库</Typography.Title>
-          <Typography.Text type="secondary">录入进货数量与进货价，自动更新库存均价</Typography.Text>
+          <Typography.Text type="secondary">录入{terms.product}进货数量与进货价，自动更新库存均价</Typography.Text>
         </div>
         <Button onClick={() => void loadRecords()}>刷新记录</Button>
       </div>
@@ -65,10 +65,10 @@ export default function InboundPage() {
               <DatePicker style={{ width: '100%' }} />
             </Form.Item>
             <Space.Compact block>
-              <Form.Item label="类别" style={{ width: '40%' }}>
+              <Form.Item label={terms.category} style={{ width: '40%' }}>
                 <Select options={categories.map((item) => ({ value: item, label: item }))} onChange={setCategory} />
               </Form.Item>
-              <Form.Item label="商品" name="productId" rules={[{ required: true }]} style={{ width: '60%' }}>
+              <Form.Item label={terms.product} name="productId" rules={[{ required: true }]} style={{ width: '60%' }}>
                 <Select
                   showSearch
                   optionFilterProp="label"
@@ -103,7 +103,7 @@ export default function InboundPage() {
             dataSource={records}
             columns={[
               { title: '日期', dataIndex: 'inboundDate', width: 110 },
-              { title: '商品', dataIndex: 'productName' },
+              { title: terms.product, dataIndex: 'productName' },
               { title: '供应商', dataIndex: 'supplierName', width: 120 },
               { title: '数量', dataIndex: 'quantity', align: 'right', width: 90 },
               { title: '进货价', render: (_, row) => money(row.unitCost), align: 'right', width: 100 },

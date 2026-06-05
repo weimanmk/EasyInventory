@@ -11,7 +11,7 @@ import { useAppStore } from '../store/appStore';
 export default function OutboundPage() {
   const { message, modal } = App.useApp();
   const [form] = Form.useForm();
-  const { customers, setProducts } = useAppStore();
+  const { customers, features, terms, setProducts } = useAppStore();
   const [region, setRegion] = useState<string>();
   const [customer, setCustomer] = useState<CustomerDto>();
   const [lines, setLines] = useState<OrderLine[]>([]);
@@ -28,14 +28,18 @@ export default function OutboundPage() {
   const totals = useMemo(() => {
     const productSalesAmount = lines.reduce((sum, item) => sum + item.amount, 0);
     const directDiscountAmount = lines.reduce((sum, item) => sum + (item.preview?.directDiscountPreview?.amount ?? 0), 0);
-    const brandSubsidyAmount = lines.reduce((sum, item) => sum + (item.preview?.monthlyCreditPreview?.amount ?? 0), 0);
-    const monthlyCreditUsed = lines.reduce(
-      (sum, item) => sum + (item.monthlyCreditUses ?? []).reduce((inner, credit) => inner + credit.amount, 0),
-      0
-    );
+    const brandSubsidyAmount = features.monthlyCredit
+      ? lines.reduce((sum, item) => sum + (item.preview?.monthlyCreditPreview?.amount ?? 0), 0)
+      : 0;
+    const monthlyCreditUsed = features.monthlyCredit
+      ? lines.reduce(
+        (sum, item) => sum + (item.monthlyCreditUses ?? []).reduce((inner, credit) => inner + credit.amount, 0),
+        0
+      )
+      : 0;
     const customerPayableAmount = productSalesAmount - directDiscountAmount - monthlyCreditUsed;
     return { productSalesAmount, directDiscountAmount, brandSubsidyAmount, monthlyCreditUsed, customerPayableAmount };
-  }, [lines]);
+  }, [features.monthlyCredit, lines]);
 
   function addLine(line: OrderLine) {
     setLines((prev) => [...prev, line]);
@@ -68,8 +72,12 @@ export default function OutboundPage() {
   }
 
   async function openCreditModal(line: OrderLine) {
+    if (!features.monthlyCredit) {
+      message.warning(`${terms.credit}功能已关闭`);
+      return;
+    }
     if (!customer) {
-      message.warning('请先选择客户');
+      message.warning(`请先选择${terms.customer}`);
       return;
     }
     try {
@@ -81,7 +89,7 @@ export default function OutboundPage() {
       setAvailableCredits(credits);
       setCreditLine(line);
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '可用月费加载失败');
+      message.error(error instanceof Error ? error.message : `可用${terms.credit}加载失败`);
     }
   }
 
@@ -107,11 +115,11 @@ export default function OutboundPage() {
   async function saveOrder(printAfter = false) {
     const values = await form.validateFields();
     if (!customer) {
-      message.warning('请选择客户');
+      message.warning(`请选择${terms.customer}`);
       return;
     }
     if (lines.length === 0) {
-      message.warning('请选择商品');
+      message.warning(`请选择${terms.product}`);
       return;
     }
     setSaving(true);
@@ -126,7 +134,7 @@ export default function OutboundPage() {
           quantity: line.quantity,
           unitPrice: line.unitPrice,
           remark: line.remark,
-          monthlyCreditUses: line.monthlyCreditUses
+          monthlyCreditUses: features.monthlyCredit ? line.monthlyCreditUses : undefined
         }))
       }) as { orderId: number; orderNo: string; documentPath: string };
       if (printAfter) {
@@ -151,7 +159,9 @@ export default function OutboundPage() {
       <div className="page-title">
         <div>
           <Typography.Title level={2}>快速出库</Typography.Title>
-          <Typography.Text type="secondary">客户、商品、数量、价格集中处理</Typography.Text>
+          <Typography.Text type="secondary">
+            {terms.customer}、{terms.product}、数量、价格集中处理
+          </Typography.Text>
         </div>
         <Space>
           <Button icon={<FileExcelOutlined />} onClick={() => void saveOrder(false)} loading={saving}>保存并导出</Button>
@@ -168,7 +178,7 @@ export default function OutboundPage() {
           <Form.Item label="日期" name="orderDate" rules={[{ required: true }]}>
             <DatePicker style={{ width: '100%' }} />
           </Form.Item>
-          <Form.Item label="地区">
+          <Form.Item label={terms.region}>
             <Select
               allowClear
               options={regions.map((value) => ({ value, label: value }))}
@@ -176,7 +186,7 @@ export default function OutboundPage() {
               onChange={setRegion}
             />
           </Form.Item>
-          <Form.Item label="客户" rules={[{ required: true }]}>
+          <Form.Item label={terms.customer} rules={[{ required: true }]}>
             <Select
               showSearch
               optionFilterProp="label"
@@ -199,7 +209,7 @@ export default function OutboundPage() {
       <div className="outbound-grid">
         <Card
           title="出库明细"
-          extra={<Button type="primary" icon={<ShoppingCartOutlined />} onClick={() => setPickerOpen(true)}>选择商品</Button>}
+          extra={<Button type="primary" icon={<ShoppingCartOutlined />} onClick={() => setPickerOpen(true)}>选择{terms.product}</Button>}
         >
           <Table
             className="outbound-lines-table"
@@ -211,7 +221,7 @@ export default function OutboundPage() {
             columns={[
               { title: '类型', render: () => <Tag color="blue">正常</Tag>, width: 76 },
               {
-                title: '商品',
+                title: terms.product,
                 dataIndex: 'productName',
                 width: 220,
                 render: (value) => (
@@ -221,7 +231,7 @@ export default function OutboundPage() {
                 )
               },
               {
-                title: '类别',
+                title: terms.category,
                 dataIndex: 'category',
                 width: 110,
                 render: (value) => (
@@ -273,18 +283,20 @@ export default function OutboundPage() {
                   />
                 )
               },
-              {
-                title: '月费抵扣',
-                width: 130,
-                render: (_, row) => {
-                  const used = (row.monthlyCreditUses ?? []).reduce((sum, item) => sum + item.amount, 0);
-                  return (
-                    <Button size="small" icon={<WalletOutlined />} onClick={() => void openCreditModal(row)}>
-                      {used > 0 ? money(used) : '选择'}
-                    </Button>
-                  );
-                }
-              },
+              ...(features.monthlyCredit
+                ? [{
+                  title: `${terms.credit}抵扣`,
+                  width: 130,
+                  render: (_: unknown, row: OrderLine) => {
+                    const used = (row.monthlyCreditUses ?? []).reduce((sum, item) => sum + item.amount, 0);
+                    return (
+                      <Button size="small" icon={<WalletOutlined />} onClick={() => void openCreditModal(row)}>
+                        {used > 0 ? money(used) : '选择'}
+                      </Button>
+                    );
+                  }
+                }]
+                : []),
               {
                 title: '规则',
                 width: 180,
@@ -313,19 +325,23 @@ export default function OutboundPage() {
         </Card>
         <Card title="合计">
           <div className="totals-panel">
-            <Statistic title="商品销售额" value={money(totals.productSalesAmount)} />
+            <Statistic title={`${terms.product}销售额`} value={money(totals.productSalesAmount)} />
             <Statistic title="本单折现" value={money(totals.directDiscountAmount)} valueStyle={{ color: '#d4380d' }} />
-            <Statistic title="月费抵扣" value={money(totals.monthlyCreditUsed)} valueStyle={{ color: '#d4380d' }} />
-            <Statistic title="生成月费" value={money(totals.brandSubsidyAmount)} />
-            <Statistic title="客户实收" value={money(totals.customerPayableAmount)} valueStyle={{ color: '#16a34a' }} />
+            {features.monthlyCredit && (
+              <>
+                <Statistic title={`${terms.credit}抵扣`} value={money(totals.monthlyCreditUsed)} valueStyle={{ color: '#d4380d' }} />
+                <Statistic title={`生成${terms.credit}`} value={money(totals.brandSubsidyAmount)} />
+              </>
+            )}
+            <Statistic title={`${terms.customer}实收`} value={money(totals.customerPayableAmount)} valueStyle={{ color: '#16a34a' }} />
             <Button block onClick={() => modal.confirm({ title: '清空出库明细？', onOk: () => setLines([]) })}>清空</Button>
           </div>
         </Card>
       </div>
       <ProductPickerModal open={pickerOpen} customer={customer} onClose={() => setPickerOpen(false)} onAdd={addLine} />
       <Modal
-        title={creditLine ? `选择月费抵扣：${creditLine.productName}` : '选择月费抵扣'}
-        open={!!creditLine}
+        title={creditLine ? `选择${terms.credit}抵扣：${creditLine.productName}` : `选择${terms.credit}抵扣`}
+        open={features.monthlyCredit && !!creditLine}
         onCancel={() => setCreditLine(null)}
         onOk={() => setCreditLine(null)}
         width={720}
@@ -337,7 +353,7 @@ export default function OutboundPage() {
           size="small"
           columns={[
             { title: '来源订单', dataIndex: 'sourceOrderNo' },
-            { title: '类别', dataIndex: 'category', width: 100 },
+            { title: terms.category, dataIndex: 'category', width: 100 },
             { title: '可用月份', dataIndex: 'availableMonth', width: 100 },
             { title: '剩余', render: (_, row) => money(row.remainingAmount), align: 'right', width: 90 },
             {
@@ -358,7 +374,7 @@ export default function OutboundPage() {
               }
             }
           ]}
-          locale={{ emptyText: '暂无可用月费' }}
+          locale={{ emptyText: `暂无可用${terms.credit}` }}
         />
       </Modal>
     </div>

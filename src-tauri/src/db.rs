@@ -4,6 +4,7 @@ use crate::utils::{money, now_text, today_text};
 use anyhow::{anyhow, Context};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::fs;
+use std::path::{Path, PathBuf};
 
 pub const GUEST_CUSTOMER_NAME: &str = "散客";
 const GUEST_CUSTOMER_REGION: &str = "散客";
@@ -242,6 +243,68 @@ pub fn init_schema(conn: &Connection) -> anyhow::Result<()> {
           message TEXT,
           created_at TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS audit_logs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          log_time TEXT NOT NULL,
+          module TEXT NOT NULL,
+          action TEXT NOT NULL,
+          target_type TEXT,
+          target_id INTEGER,
+          target_label TEXT,
+          result TEXT NOT NULL,
+          message TEXT,
+          details TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_audit_logs_time ON audit_logs(log_time);
+        CREATE INDEX IF NOT EXISTS idx_audit_logs_module ON audit_logs(module);
+
+        CREATE TABLE IF NOT EXISTS inventory_adjustments (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          adjustment_date TEXT NOT NULL,
+          product_id INTEGER NOT NULL,
+          product_name TEXT NOT NULL,
+          category TEXT NOT NULL,
+          adjustment_type TEXT NOT NULL,
+          quantity_delta REAL NOT NULL,
+          unit_cost REAL DEFAULT 0,
+          amount REAL DEFAULT 0,
+          reason TEXT NOT NULL,
+          remark TEXT,
+          status TEXT DEFAULT 'normal',
+          void_reason TEXT,
+          voided_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY(product_id) REFERENCES products(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_inventory_adjustments_product ON inventory_adjustments(product_id);
+        CREATE INDEX IF NOT EXISTS idx_inventory_adjustments_date ON inventory_adjustments(adjustment_date);
+        CREATE INDEX IF NOT EXISTS idx_inventory_adjustments_status ON inventory_adjustments(status);
+
+        CREATE TABLE IF NOT EXISTS stocktake_records (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          stocktake_date TEXT NOT NULL,
+          product_id INTEGER NOT NULL,
+          product_name TEXT NOT NULL,
+          category TEXT NOT NULL,
+          system_stock REAL NOT NULL,
+          actual_stock REAL NOT NULL,
+          difference_quantity REAL NOT NULL,
+          unit_cost REAL DEFAULT 0,
+          difference_amount REAL DEFAULT 0,
+          reason TEXT NOT NULL,
+          remark TEXT,
+          status TEXT DEFAULT 'normal',
+          void_reason TEXT,
+          voided_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY(product_id) REFERENCES products(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_stocktake_records_product ON stocktake_records(product_id);
+        CREATE INDEX IF NOT EXISTS idx_stocktake_records_date ON stocktake_records(stocktake_date);
+        CREATE INDEX IF NOT EXISTS idx_stocktake_records_status ON stocktake_records(status);
         "#,
     )?;
     ensure_compatible_schema(conn)?;
@@ -293,6 +356,41 @@ pub fn seed_settings(conn: &Connection) -> anyhow::Result<()> {
         ("default_export_format", "xlsx"),
         ("default_print_template", "excel"),
         ("default_printer", ""),
+        ("setup_completed", "false"),
+        ("merchant_name", "我的商行"),
+        ("merchant_contact", ""),
+        ("merchant_phone", ""),
+        ("merchant_address", ""),
+        ("merchant_logo_path", ""),
+        ("merchant_remark", ""),
+        ("industry_template", "general_wholesale"),
+        ("term_customer", "客户"),
+        ("term_region", "地区"),
+        ("term_product", "商品"),
+        ("term_category", "类别"),
+        ("term_rule", "价格规则"),
+        ("term_credit", "返利额度"),
+        ("guest_customer_name", GUEST_CUSTOMER_NAME),
+        ("guest_customer_id", ""),
+        ("active_order_template", "general"),
+        ("feature_supplier_ledger", "true"),
+        ("feature_customer_rules", "true"),
+        ("feature_monthly_credit", "true"),
+        ("feature_receivables", "true"),
+        ("feature_product_ranking", "true"),
+        ("feature_customer_analysis", "true"),
+        ("feature_inventory_control", "true"),
+        ("feature_diagnostics", "true"),
+        ("template_store_name", "我的商行"),
+        ("template_footer_text", ""),
+        ("template_show_barcode", "true"),
+        ("template_product_label", "商品名称"),
+        ("template_quantity_label", "数量"),
+        ("template_price_label", "价格"),
+        ("template_amount_label", "总价格"),
+        ("template_remark_label", "备注"),
+        ("template_orientation", "portrait"),
+        ("template_margin", "0"),
         ("last_auto_backup_date", ""),
     ];
     for (key, value) in defaults {
@@ -306,41 +404,101 @@ pub fn seed_settings(conn: &Connection) -> anyhow::Result<()> {
 
 pub fn ensure_guest_customer(conn: &Connection) -> anyhow::Result<i64> {
     let now = now_text();
-    let existing_id = conn
-        .query_row(
-            "SELECT id FROM customers WHERE name = ?1 ORDER BY is_active DESC, id LIMIT 1",
-            [GUEST_CUSTOMER_NAME],
-            |row| row.get::<_, i64>(0),
-        )
-        .optional()?;
+    let guest_name = guest_customer_name(conn)?;
+    if let Some(id) = guest_customer_id_setting(conn)? {
+        if customer_exists(conn, id)? {
+            activate_guest_customer(conn, id, &guest_name, &now)?;
+            return Ok(id);
+        }
+    }
 
-    if let Some(id) = existing_id {
-        conn.execute(
-            "UPDATE customers
-             SET region = COALESCE(NULLIF(region, ''), ?1), is_active = 1, updated_at = ?2
-             WHERE id = ?3",
-            params![GUEST_CUSTOMER_REGION, now, id],
-        )?;
+    let desired_id = customer_id_by_name(conn, &guest_name)?;
+    let legacy_id = if guest_name == GUEST_CUSTOMER_NAME {
+        None
+    } else {
+        customer_id_by_name(conn, GUEST_CUSTOMER_NAME)?
+    };
+    if let Some(id) = desired_id.or(legacy_id) {
+        activate_guest_customer(conn, id, &guest_name, &now)?;
         return Ok(id);
     }
 
     conn.execute(
         "INSERT INTO customers (region, name, address, phone, is_active, remark, created_at, updated_at)
          VALUES (?1, ?2, NULL, NULL, 1, ?3, ?4, ?4)",
-        params![GUEST_CUSTOMER_REGION, GUEST_CUSTOMER_NAME, "系统默认客户", now],
+        params![GUEST_CUSTOMER_REGION, guest_name, "系统默认客户", now],
     )?;
-    Ok(conn.last_insert_rowid())
+    let id = conn.last_insert_rowid();
+    set_setting(conn, "guest_customer_id", &id.to_string())?;
+    Ok(id)
 }
 
 pub fn is_guest_customer(conn: &Connection, id: i64) -> anyhow::Result<bool> {
+    if let Some(guest_id) = guest_customer_id_setting(conn)? {
+        if customer_exists(conn, guest_id)? {
+            return Ok(id == guest_id);
+        }
+    }
+    let guest_name = guest_customer_name(conn)?;
     conn.query_row(
-        "SELECT name = ?1 FROM customers WHERE id = ?2",
-        params![GUEST_CUSTOMER_NAME, id],
+        "SELECT name IN (?1, ?2) FROM customers WHERE id = ?3",
+        params![guest_name, GUEST_CUSTOMER_NAME, id],
         |row| row.get::<_, bool>(0),
     )
     .optional()
     .map(|value| value.unwrap_or(false))
     .map_err(Into::into)
+}
+
+pub fn guest_customer_name(conn: &Connection) -> anyhow::Result<String> {
+    Ok(setting(conn, "guest_customer_name")?
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| GUEST_CUSTOMER_NAME.to_string()))
+}
+
+fn activate_guest_customer(
+    conn: &Connection,
+    id: i64,
+    guest_name: &str,
+    now: &str,
+) -> anyhow::Result<()> {
+    conn.execute(
+        "UPDATE customers
+         SET name = ?1,
+             region = COALESCE(NULLIF(region, ''), ?2),
+             is_active = 1,
+             updated_at = ?3
+         WHERE id = ?4",
+        params![guest_name, GUEST_CUSTOMER_REGION, now, id],
+    )?;
+    set_setting(conn, "guest_customer_id", &id.to_string())?;
+    Ok(())
+}
+
+fn customer_id_by_name(conn: &Connection, name: &str) -> anyhow::Result<Option<i64>> {
+    conn.query_row(
+        "SELECT id FROM customers WHERE name = ?1 ORDER BY is_active DESC, id LIMIT 1",
+        [name],
+        |row| row.get::<_, i64>(0),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn customer_exists(conn: &Connection, id: i64) -> anyhow::Result<bool> {
+    conn.query_row(
+        "SELECT COUNT(*) > 0 FROM customers WHERE id = ?1",
+        [id],
+        |row| row.get::<_, bool>(0),
+    )
+    .map_err(Into::into)
+}
+
+fn guest_customer_id_setting(conn: &Connection) -> anyhow::Result<Option<i64>> {
+    Ok(setting(conn, "guest_customer_id")?
+        .and_then(|value| value.trim().parse::<i64>().ok())
+        .filter(|id| *id > 0))
 }
 
 pub fn setting(conn: &Connection, key: &str) -> anyhow::Result<Option<String>> {
@@ -391,11 +549,49 @@ pub fn create_backup_file(state: &AppState, backup_type: &str) -> anyhow::Result
     Ok(path_text)
 }
 
+pub fn restore_database_file(
+    db_path: &Path,
+    backup_path: &Path,
+    snapshot_path: &Path,
+) -> anyhow::Result<()> {
+    if !backup_path.exists() {
+        return Err(anyhow!("备份文件不存在"));
+    }
+    if let Some(parent) = snapshot_path.parent() {
+        fs::create_dir_all(parent).with_context(|| "创建恢复前快照目录失败")?;
+    }
+    if db_path.exists() {
+        fs::copy(db_path, snapshot_path).with_context(|| "创建恢复前数据库快照失败")?;
+    }
+    remove_sqlite_sidecars(db_path)?;
+    fs::copy(backup_path, db_path).with_context(|| "恢复数据库文件失败")?;
+    remove_sqlite_sidecars(db_path)?;
+    Ok(())
+}
+
+fn remove_sqlite_sidecars(db_path: &Path) -> anyhow::Result<()> {
+    for sidecar in sqlite_sidecar_paths(db_path) {
+        if sidecar.exists() {
+            fs::remove_file(&sidecar).with_context(|| {
+                format!("清理 SQLite 临时文件失败：{}", sidecar.to_string_lossy())
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn sqlite_sidecar_paths(db_path: &Path) -> [PathBuf; 2] {
+    [
+        PathBuf::from(format!("{}-wal", db_path.to_string_lossy())),
+        PathBuf::from(format!("{}-shm", db_path.to_string_lossy())),
+    ]
+}
+
 pub fn recalc_stock_balance(conn: &Connection, product_id: i64) -> anyhow::Result<(f64, f64)> {
     let inbound: (f64, f64) = conn.query_row(
         "SELECT COALESCE(SUM(quantity), 0), COALESCE(SUM(amount), 0)
          FROM inventory_movements
-         WHERE product_id = ?1 AND movement_type = 'inbound'",
+         WHERE product_id = ?1 AND movement_type IN ('inbound', 'initial_stock')",
         [product_id],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
@@ -509,6 +705,34 @@ mod tests {
     }
 
     #[test]
+    fn seed_settings_uses_generic_defaults_for_new_install() {
+        let conn = memory_conn();
+
+        seed_settings(&conn).unwrap();
+
+        assert_eq!(
+            setting(&conn, "template_store_name").unwrap().as_deref(),
+            Some("我的商行")
+        );
+        assert_eq!(
+            setting(&conn, "merchant_name").unwrap().as_deref(),
+            Some("我的商行")
+        );
+        assert_eq!(
+            setting(&conn, "setup_completed").unwrap().as_deref(),
+            Some("false")
+        );
+        assert_eq!(
+            setting(&conn, "industry_template").unwrap().as_deref(),
+            Some("general_wholesale")
+        );
+        assert_eq!(
+            setting(&conn, "term_credit").unwrap().as_deref(),
+            Some("返利额度")
+        );
+    }
+
+    #[test]
     fn ensure_guest_customer_reactivates_existing_guest_customer() {
         let conn = memory_conn();
         let now = now_text();
@@ -527,6 +751,25 @@ mod tests {
         assert_eq!(customer.name, GUEST_CUSTOMER_NAME);
         assert_eq!(customer.region.as_deref(), Some(GUEST_CUSTOMER_REGION));
         assert!(customer.is_active);
+    }
+
+    #[test]
+    fn ensure_guest_customer_renames_existing_fixed_customer_by_id() {
+        let conn = memory_conn();
+        let original_id = ensure_guest_customer(&conn).unwrap();
+
+        set_setting(&conn, "guest_customer_name", "临时客户").unwrap();
+        let renamed_id = ensure_guest_customer(&conn).unwrap();
+        let customer = customer_by_id(&conn, renamed_id).unwrap();
+        let customer_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM customers", [], |row| row.get(0))
+            .unwrap();
+
+        assert_eq!(renamed_id, original_id);
+        assert_eq!(customer.name, "临时客户");
+        assert!(customer.is_active);
+        assert!(is_guest_customer(&conn, renamed_id).unwrap());
+        assert_eq!(customer_count, 1);
     }
 
     #[test]
@@ -560,6 +803,37 @@ mod tests {
         assert_eq!(product.current_stock, 21.0);
         assert_eq!(product.avg_cost, 7.0);
         assert_eq!(product.stock_value, 147.0);
+    }
+
+    #[test]
+    fn restore_database_file_creates_snapshot_and_replaces_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("inventory.db");
+        let backup_path = dir.path().join("backup.db");
+        let snapshot_path = dir.path().join("pre_restore.db");
+
+        let conn = Connection::open(&db_path).unwrap();
+        init_schema(&conn).unwrap();
+        set_setting(&conn, "restore_marker", "current").unwrap();
+        drop(conn);
+
+        let backup = Connection::open(&backup_path).unwrap();
+        init_schema(&backup).unwrap();
+        set_setting(&backup, "restore_marker", "backup").unwrap();
+        drop(backup);
+
+        restore_database_file(&db_path, &backup_path, &snapshot_path).unwrap();
+
+        let restored = Connection::open(&db_path).unwrap();
+        let snapshot = Connection::open(&snapshot_path).unwrap();
+        assert_eq!(
+            setting(&restored, "restore_marker").unwrap().as_deref(),
+            Some("backup")
+        );
+        assert_eq!(
+            setting(&snapshot, "restore_marker").unwrap().as_deref(),
+            Some("current")
+        );
     }
 
     #[test]

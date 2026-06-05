@@ -6,9 +6,12 @@ import type { SupplierDto } from '../shared/types';
 export default function SuppliersPage() {
   const { message, modal } = App.useApp();
   const [form] = Form.useForm();
+  const [batchForm] = Form.useForm();
   const [suppliers, setSuppliers] = useState<SupplierDto[]>([]);
   const [keyword, setKeyword] = useState('');
   const [editing, setEditing] = useState<SupplierDto | null>(null);
+  const [batchOpen, setBatchOpen] = useState(false);
+  const [selectedSupplierIds, setSelectedSupplierIds] = useState<number[]>([]);
 
   const filtered = suppliers.filter((item) => {
     const text = `${item.name}${item.contact ?? ''}${item.phone ?? ''}${item.address ?? ''}`;
@@ -35,6 +38,31 @@ export default function SuppliersPage() {
   function closeEditor() {
     setEditing(null);
     form.resetFields();
+  }
+
+  function openBatchEditor() {
+    if (selectedSupplierIds.length === 0) {
+      message.warning('请选择供应商');
+      return;
+    }
+    batchForm.resetFields();
+    setBatchOpen(true);
+  }
+
+  async function saveBatch() {
+    const values = await batchForm.validateFields();
+    try {
+      const result = await api.batchUpdateSuppliers({
+        ids: selectedSupplierIds,
+        ...values
+      });
+      await refresh();
+      setSelectedSupplierIds([]);
+      setBatchOpen(false);
+      message.success(`已批量更新 ${result.affectedCount} 个供应商`);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '批量编辑失败');
+    }
   }
 
   async function save() {
@@ -69,7 +97,10 @@ export default function SuppliersPage() {
           <Typography.Title level={2}>供应商管理</Typography.Title>
           <Typography.Text type="secondary">维护入库可选供应商资料</Typography.Text>
         </div>
-        <Button type="primary" onClick={openNewSupplier}>新增供应商</Button>
+        <Space>
+          <Button disabled={selectedSupplierIds.length === 0} onClick={openBatchEditor}>批量编辑</Button>
+          <Button type="primary" onClick={openNewSupplier}>新增供应商</Button>
+        </Space>
       </div>
       <div className="toolbar panel">
         <Input
@@ -84,6 +115,10 @@ export default function SuppliersPage() {
       <Table
         rowKey="id"
         dataSource={filtered}
+        rowSelection={{
+          selectedRowKeys: selectedSupplierIds,
+          onChange: (keys) => setSelectedSupplierIds(keys as number[])
+        }}
         columns={[
           { title: '供应商名称', dataIndex: 'name' },
           { title: '联系人', dataIndex: 'contact', width: 120 },
@@ -124,6 +159,15 @@ export default function SuppliersPage() {
           <Form.Item label="地址" name="address"><Input /></Form.Item>
           <Form.Item label="备注" name="remark"><Input.TextArea rows={3} /></Form.Item>
           <Button type="primary" block onClick={() => void save()}>保存</Button>
+        </Form>
+      </Drawer>
+      <Drawer title={`批量编辑供应商（${selectedSupplierIds.length}）`} open={batchOpen} onClose={() => setBatchOpen(false)} width={420}>
+        <Form form={batchForm} layout="vertical" className="dense-form">
+          <Form.Item label="联系人" name="contact"><Input /></Form.Item>
+          <Form.Item label="电话" name="phone"><Input /></Form.Item>
+          <Form.Item label="地址" name="address"><Input /></Form.Item>
+          <Form.Item label="备注" name="remark"><Input.TextArea rows={3} /></Form.Item>
+          <Button type="primary" block onClick={() => void saveBatch()}>保存批量修改</Button>
         </Form>
       </Drawer>
     </div>
