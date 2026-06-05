@@ -1,5 +1,18 @@
 # EasyInventory
 
+<p align="center">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.3.0-blue">
+  <img alt="License" src="https://img.shields.io/github/license/weimanmk/EasyInventory">
+  <img alt="Rust" src="https://img.shields.io/badge/rust-1.85%2B-orange">
+  <img alt="Tauri" src="https://img.shields.io/badge/tauri-2.x-24C8DB">
+  <img alt="React" src="https://img.shields.io/badge/react-19-61DAFB">
+  <img alt="SQLite" src="https://img.shields.io/badge/sqlite-local-003B57">
+</p>
+
+<p align="center">
+  Windows 本地库存、计价、出库打单与经营分析工具
+</p>
+
 EasyInventory 是一个面向 Windows 单机使用的本地库存、计价、出库打单和经营分析软件，适合小型商贸、批发、配送、门店和档口经营场景。
 
 当前版本：`1.3.0`
