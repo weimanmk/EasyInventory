@@ -137,4 +137,8 @@ npm run release:verify
 
 ## 许可证
 
-当前仓库尚未声明开源许可证。上传公开仓库前请补充合适的 `LICENSE` 文件。
+本项目采用 `GNU Affero General Public License v3.0`（AGPLv3）。
+
+你可以在 AGPLv3 条款下使用、复制、修改和分发本项目。若修改版本通过网络服务方式提供给用户，也需要按 AGPLv3 要求向用户提供对应源码。
+
+完整条款见 [LICENSE](LICENSE)。
