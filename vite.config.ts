@@ -12,7 +12,18 @@ export default defineConfig({
   envPrefix: ['VITE_', 'TAURI_'],
   build: {
     target: 'es2020',
-    minify: false,
-    sourcemap: true
+    minify: 'esbuild',
+    sourcemap: false,
+    chunkSizeWarningLimit: 800,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('echarts')) {
+            return 'vendor-echarts';
+          }
+          return undefined;
+        }
+      }
+    }
   }
 });

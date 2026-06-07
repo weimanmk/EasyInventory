@@ -1,921 +1,9 @@
-use crate::db;
-use crate::models::*;
-use crate::utils::{money, next_month, normalize_date, now_text};
-use anyhow::{anyhow, Context};
-use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
-
-#[derive(Debug, Clone)]
-struct RuleRow {
-    id: i64,
-    fixed_price: Option<f64>,
-    threshold_quantity: Option<f64>,
-    gift_product_id: Option<i64>,
-    gift_quantity: Option<f64>,
-    direct_discount_amount: Option<f64>,
-    monthly_credit_amount: Option<f64>,
-    credit_category: Option<String>,
-}
-
-pub fn preview_quote(
-    conn: &Connection,
-    request: PreviewQuoteRequest,
-) -> anyhow::Result<QuotePreviewDto> {
-    if request.quantity <= 0.0 {
-        return Err(anyhow!("数量必须大于 0"));
-    }
-    let product = db::product_by_id(conn, request.product_id)?;
-    let rule = active_rule(conn, request.customer_id, request.product_id)?;
-    let (unit_price, price_source) = if let Some(manual_price) = request.manual_price {
-        (manual_price, "manual".to_string())
-    } else if let Some(rule) = &rule {
-        if let Some(fixed_price) = rule.fixed_price {
-            (fixed_price, "customer_fixed_price".to_string())
-        } else if product.default_price > 0.0 {
-            (product.default_price, "default_price".to_string())
-        } else {
-            (0.0, "zero".to_string())
-        }
-    } else if product.default_price > 0.0 {
-        (product.default_price, "default_price".to_string())
-    } else {
-        (0.0, "zero".to_string())
-    };
-
-    let mut messages = Vec::new();
-    match price_source.as_str() {
-        "manual" => messages.push("手动价".to_string()),
-        "customer_fixed_price" => messages.push("客户固定价".to_string()),
-        "default_price" => messages.push("默认售价".to_string()),
-        _ => messages.push("价格为 0".to_string()),
-    }
-
-    let mut gift_preview = None;
-    let mut discount_preview = None;
-    let mut monthly_preview = None;
-    let mut rule_id = None;
-
-    if let Some(rule) = rule {
-        rule_id = Some(rule.id);
-        if let Some(threshold) = rule.threshold_quantity.filter(|value| *value > 0.0) {
-            let times = (request.quantity / threshold).floor();
-            if times > 0.0 {
-                if let (Some(gift_product_id), Some(gift_quantity)) =
-                    (rule.gift_product_id, rule.gift_quantity)
-                {
-                    if gift_quantity > 0.0 {
-                        let gift = db::product_by_id(conn, gift_product_id)?;
-                        let quantity = money(times * gift_quantity);
-                        gift_preview = Some(GiftPreviewDto {
-                            product_id: gift_product_id,
-                            product_name: gift.name,
-                            quantity,
-                        });
-                        messages.push(format!("每满 {} 送 {}", threshold, quantity));
-                    }
-                }
-                if let Some(discount) = rule.direct_discount_amount.filter(|value| *value > 0.0) {
-                    let amount = money(times * discount);
-                    discount_preview = Some(DiscountPreviewDto { amount });
-                    messages.push(format!("本单折现 {}", amount));
-                }
-                if let Some(credit) = rule.monthly_credit_amount.filter(|value| *value > 0.0) {
-                    let amount = money(times * credit);
-                    let category = rule
-                        .credit_category
-                        .unwrap_or_else(|| product.category.clone());
-                    monthly_preview = Some(MonthlyCreditPreviewDto { amount, category });
-                    messages.push(format!(
-                        "生成 {} 月费 {}",
-                        next_month(&request.order_date),
-                        amount
-                    ));
-                }
-            }
-        }
-    }
-
-    Ok(QuotePreviewDto {
-        product_id: request.product_id,
-        unit_price: money(unit_price),
-        price_source,
-        amount: money(request.quantity * unit_price),
-        rule_id,
-        gift_preview,
-        direct_discount_preview: discount_preview,
-        monthly_credit_preview: monthly_preview,
-        message: messages.join("；"),
-    })
-}
-
-pub fn save_order(
-    conn: &mut Connection,
-    request: SaveOrderRequest,
-) -> anyhow::Result<SaveOrderResponse> {
-    if request.customer_id <= 0 {
-        return Err(anyhow!("必须选择客户"));
-    }
-    if request.items.is_empty() {
-        return Err(anyhow!("必须至少选择一条商品"));
-    }
-    for item in &request.items {
-        if item.quantity <= 0.0 {
-            return Err(anyhow!("商品数量必须大于 0"));
-        }
-        if item.unit_price < 0.0 {
-            return Err(anyhow!("商品单价不能小于 0"));
-        }
-    }
-
-    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let order_no = next_order_no(&tx, &request.order_date)?;
-    let customer = db::customer_by_id(&tx, request.customer_id)?;
-    let address = request
-        .customer_address
-        .clone()
-        .or_else(|| customer.address.clone());
-    let now = now_text();
-    let totals = OrderTotalsDto::default();
-
-    tx.execute(
-        "INSERT INTO orders
-         (order_no, order_date, customer_id, customer_name, customer_address,
-          product_sales_amount, direct_discount_amount, monthly_credit_used,
-          customer_payable_amount, brand_subsidy_amount, cost_amount, gift_cost_amount,
-          profit_amount, remark, status, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, 0, 0, 0, 0, 0, 0, 0, 0, ?6, 'normal', ?7, ?7)",
-        params![
-            order_no,
-            normalize_date(&request.order_date),
-            request.customer_id,
-            customer.name,
-            address,
-            request.remark,
-            now
-        ],
-    )?;
-    let order_id = tx.last_insert_rowid();
-
-    let mut totals = totals;
-    let mut sort_order = 1_i64;
-    for item in &request.items {
-        let product = db::product_by_id(&tx, item.product_id)?;
-        let rule = active_rule(&tx, request.customer_id, item.product_id)?;
-        let amount = money(item.quantity * item.unit_price);
-        let cost_amount = money(product.avg_cost * item.quantity);
-        let profit = money(amount - cost_amount);
-        totals.product_sales_amount = money(totals.product_sales_amount + amount);
-        totals.cost_amount = money(totals.cost_amount + cost_amount);
-        totals.profit_amount = money(totals.profit_amount + profit);
-
-        insert_order_item(
-            &tx,
-            NewOrderItem {
-                order_id,
-                line_type: "normal",
-                product_id: Some(product.id),
-                product_name: Some(&product.name),
-                category: Some(&product.category),
-                barcode: product.barcode.as_deref(),
-                quantity: item.quantity,
-                unit_price: item.unit_price,
-                amount,
-                avg_cost: product.avg_cost,
-                cost_amount,
-                profit_amount: profit,
-                related_product_id: None,
-                rule_id: rule.as_ref().map(|rule| rule.id),
-                monthly_credit_id: None,
-                remark: item.remark.as_deref(),
-                sort_order,
-            },
-        )?;
-        sort_order += 1;
-
-        insert_movement(
-            &tx,
-            NewMovement {
-                date: &request.order_date,
-                product_id: product.id,
-                movement_type: "outbound",
-                quantity: item.quantity,
-                unit_price: item.unit_price,
-                amount,
-                order_id,
-                order_no: &order_no,
-                remark: "订单出库",
-            },
-        )?;
-        db::recalc_stock_balance(&tx, product.id)?;
-
-        apply_credit_uses(
-            &tx,
-            order_id,
-            &order_no,
-            &mut sort_order,
-            &mut totals,
-            item.monthly_credit_uses.clone().unwrap_or_default(),
-        )?;
-
-        if let Some(rule) = rule {
-            apply_rule_effects(
-                &tx,
-                &mut sort_order,
-                &mut totals,
-                RuleEffectInput {
-                    request: &request,
-                    order_id,
-                    order_no: &order_no,
-                    product: &product,
-                    rule: &rule,
-                    quantity: item.quantity,
-                },
-            )?;
-        }
-    }
-
-    totals.customer_payable_amount = money(
-        totals.product_sales_amount - totals.direct_discount_amount - totals.monthly_credit_used,
-    );
-
-    tx.execute(
-        "UPDATE orders SET
-          product_sales_amount = ?1,
-          direct_discount_amount = ?2,
-          monthly_credit_used = ?3,
-          customer_payable_amount = ?4,
-          brand_subsidy_amount = ?5,
-          cost_amount = ?6,
-          gift_cost_amount = ?7,
-          profit_amount = ?8,
-          updated_at = ?9
-         WHERE id = ?10",
-        params![
-            totals.product_sales_amount,
-            totals.direct_discount_amount,
-            totals.monthly_credit_used,
-            totals.customer_payable_amount,
-            totals.brand_subsidy_amount,
-            totals.cost_amount,
-            totals.gift_cost_amount,
-            totals.profit_amount,
-            now_text(),
-            order_id
-        ],
-    )?;
-
-    tx.commit()?;
-    Ok(SaveOrderResponse {
-        order_id,
-        order_no,
-        document_path: String::new(),
-        totals,
-    })
-}
-
-pub fn get_order_detail(conn: &Connection, order_id: i64) -> anyhow::Result<OrderDetailDto> {
-    let order = order_by_id(conn, order_id)?;
-    let mut stmt = conn.prepare(
-        "SELECT id, line_type, product_id, product_name, category, barcode, quantity, unit_price,
-                amount, avg_cost, cost_amount, profit_amount, rule_id, monthly_credit_id, remark, sort_order
-         FROM order_items
-         WHERE order_id = ?1
-         ORDER BY sort_order, id",
-    )?;
-    let rows = stmt.query_map([order_id], |row| {
-        Ok(OrderItemDto {
-            id: row.get(0)?,
-            line_type: row.get(1)?,
-            product_id: row.get(2)?,
-            product_name: row.get(3)?,
-            category: row.get(4)?,
-            barcode: row.get(5)?,
-            quantity: row.get(6)?,
-            unit_price: row.get(7)?,
-            amount: row.get(8)?,
-            avg_cost: row.get(9)?,
-            cost_amount: row.get(10)?,
-            profit_amount: row.get(11)?,
-            rule_id: row.get(12)?,
-            monthly_credit_id: row.get(13)?,
-            remark: row.get(14)?,
-            sort_order: row.get(15)?,
-        })
-    })?;
-    Ok(OrderDetailDto {
-        order,
-        items: rows.collect::<Result<Vec<_>, _>>()?,
-    })
-}
-
-pub fn list_orders(conn: &Connection, filter: ListOrdersRequest) -> anyhow::Result<Vec<OrderDto>> {
-    let mut sql = String::from(
-        "SELECT id, order_no, order_date, customer_id, customer_name, customer_address,
-                product_sales_amount, direct_discount_amount, monthly_credit_used,
-                customer_payable_amount, brand_subsidy_amount, cost_amount, gift_cost_amount,
-                profit_amount, remark, document_path, print_count, status
-         FROM orders WHERE 1 = 1",
-    );
-    if let Some(start) = filter.start_date {
-        sql.push_str(&format!(" AND order_date >= '{}'", escape_sql(&start)));
-    }
-    if let Some(end) = filter.end_date {
-        sql.push_str(&format!(" AND order_date <= '{}'", escape_sql(&end)));
-    }
-    if let Some(customer_id) = filter.customer_id {
-        sql.push_str(&format!(" AND customer_id = {customer_id}"));
-    }
-    if let Some(order_no) = filter.order_no {
-        sql.push_str(&format!(" AND order_no LIKE '%{}%'", escape_sql(&order_no)));
-    }
-    if let Some(status) = filter.status {
-        sql.push_str(&format!(" AND status = '{}'", escape_sql(&status)));
-    }
-    sql.push_str(" ORDER BY order_date DESC, id DESC LIMIT 500");
-
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map([], map_order)?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
-}
-
-pub fn list_monthly_credits(
-    conn: &Connection,
-    filter: MonthlyCreditFilterRequest,
-) -> anyhow::Result<Vec<MonthlyCreditDto>> {
-    refresh_credit_statuses(conn)?;
-    let mut sql = String::from(
-        "SELECT m.id, m.source_order_id, m.source_order_no, m.customer_id, c.name, m.category,
-                m.amount, m.used_amount, m.remaining_amount, m.generated_date, m.available_month,
-                m.status, m.remark
-         FROM monthly_credits m
-         JOIN customers c ON c.id = m.customer_id
-         WHERE 1 = 1",
-    );
-    if let Some(customer_id) = filter.customer_id {
-        sql.push_str(&format!(" AND m.customer_id = {customer_id}"));
-    }
-    if let Some(category) = filter.category {
-        sql.push_str(&format!(" AND m.category = '{}'", escape_sql(&category)));
-    }
-    if let Some(status) = filter.status {
-        sql.push_str(&format!(" AND m.status = '{}'", escape_sql(&status)));
-    }
-    if let Some(start) = filter.start_date {
-        sql.push_str(&format!(
-            " AND m.generated_date >= '{}'",
-            escape_sql(&start)
-        ));
-    }
-    if let Some(end) = filter.end_date {
-        sql.push_str(&format!(" AND m.generated_date <= '{}'", escape_sql(&end)));
-    }
-    if let Some(month) = filter.available_month {
-        sql.push_str(&format!(
-            " AND m.available_month = '{}'",
-            escape_sql(&month)
-        ));
-    }
-    sql.push_str(" ORDER BY m.generated_date DESC, m.id DESC LIMIT 500");
-
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map([], map_credit)?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
-}
-
-pub fn available_monthly_credits(
-    conn: &Connection,
-    customer_id: i64,
-    category: String,
-    order_date: String,
-) -> anyhow::Result<Vec<MonthlyCreditDto>> {
-    refresh_credit_statuses(conn)?;
-    let order_month = normalize_date(&order_date)[..7].to_string();
-    let filter = MonthlyCreditFilterRequest {
-        customer_id: Some(customer_id),
-        category: Some(category),
-        status: Some("available".to_string()),
-        start_date: None,
-        end_date: None,
-        available_month: None,
-    };
-    let credits = list_monthly_credits(conn, filter)?
-        .into_iter()
-        .filter(|credit| credit.remaining_amount > 0.0 && credit.available_month <= order_month)
-        .collect();
-    Ok(credits)
-}
-
-pub fn close_or_void_credit(conn: &Connection, id: i64, status: &str) -> anyhow::Result<()> {
-    if !matches!(status, "closed" | "voided") {
-        return Err(anyhow!("不支持的月费状态"));
-    }
-    conn.execute(
-        "UPDATE monthly_credits SET status = ?1, updated_at = ?2 WHERE id = ?3",
-        params![status, now_text(), id],
-    )?;
-    Ok(())
-}
-
-pub fn void_order(
-    conn: &mut Connection,
-    order_id: i64,
-    reason: Option<String>,
-) -> anyhow::Result<OrderDto> {
-    let tx = conn.transaction()?;
-    let order = order_by_id(&tx, order_id)?;
-    if order.status == "voided" {
-        return Err(anyhow!("订单已作废"));
-    }
-
-    let mut product_stmt = tx.prepare(
-        "SELECT DISTINCT product_id
-         FROM inventory_movements
-         WHERE source_type = 'order' AND source_id = ?1 AND product_id IS NOT NULL",
-    )?;
-    let product_ids = product_stmt
-        .query_map([order_id], |row| row.get::<_, i64>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
-    drop(product_stmt);
-
-    let mut credit_stmt = tx.prepare(
-        "SELECT id, monthly_credit_id, amount
-         FROM order_items
-         WHERE order_id = ?1 AND line_type = 'credit' AND monthly_credit_id IS NOT NULL",
-    )?;
-    let credit_uses = credit_stmt
-        .query_map([order_id], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, f64>(2)?.abs(),
-            ))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    drop(credit_stmt);
-
-    for (_, credit_id, amount) in credit_uses {
-        tx.execute(
-            "UPDATE monthly_credits
-             SET used_amount = MAX(used_amount - ?1, 0),
-                 remaining_amount = remaining_amount + ?1,
-                 status = CASE
-                    WHEN status = 'voided' THEN status
-                    WHEN available_month <= strftime('%Y-%m', 'now', 'localtime') THEN 'available'
-                    ELSE 'pending'
-                 END,
-                 updated_at = ?2
-             WHERE id = ?3",
-            params![amount, now_text(), credit_id],
-        )?;
-    }
-
-    tx.execute(
-        "UPDATE monthly_credits
-         SET status = 'voided', remaining_amount = 0, updated_at = ?1
-         WHERE source_order_id = ?2",
-        params![now_text(), order_id],
-    )?;
-    tx.execute(
-        "DELETE FROM inventory_movements WHERE source_type = 'order' AND source_id = ?1",
-        [order_id],
-    )?;
-
-    for product_id in product_ids {
-        db::recalc_stock_balance(&tx, product_id)?;
-    }
-
-    let remark = match (
-        order.remark,
-        reason.filter(|value| !value.trim().is_empty()),
-    ) {
-        (Some(existing), Some(reason)) => Some(format!("{existing}；作废原因：{reason}")),
-        (None, Some(reason)) => Some(format!("作废原因：{reason}")),
-        (existing, None) => existing,
-    };
-    tx.execute(
-        "UPDATE orders SET status = 'voided', remark = ?1, updated_at = ?2 WHERE id = ?3",
-        params![remark, now_text(), order_id],
-    )?;
-    tx.execute(
-        "UPDATE documents SET status = 'voided' WHERE order_id = ?1",
-        [order_id],
-    )?;
-
-    let updated = order_by_id(&tx, order_id)?;
-    tx.commit()?;
-    Ok(updated)
-}
-
-fn active_rule(
-    conn: &Connection,
-    customer_id: i64,
-    product_id: i64,
-) -> anyhow::Result<Option<RuleRow>> {
-    conn.query_row(
-        "SELECT id, fixed_price, threshold_quantity, gift_product_id, gift_quantity,
-                direct_discount_amount, monthly_credit_amount, credit_category
-         FROM customer_product_rules
-         WHERE customer_id = ?1 AND product_id = ?2 AND is_active = 1
-         LIMIT 1",
-        params![customer_id, product_id],
-        |row| {
-            Ok(RuleRow {
-                id: row.get(0)?,
-                fixed_price: row.get(1)?,
-                threshold_quantity: row.get(2)?,
-                gift_product_id: row.get(3)?,
-                gift_quantity: row.get(4)?,
-                direct_discount_amount: row.get(5)?,
-                monthly_credit_amount: row.get(6)?,
-                credit_category: row.get(7)?,
-            })
-        },
-    )
-    .optional()
-    .map_err(Into::into)
-}
-
-fn next_order_no(conn: &Connection, order_date: &str) -> anyhow::Result<String> {
-    let date = normalize_date(order_date);
-    let prefix = date.replace('-', "");
-    let like = format!("{prefix}%");
-    let max_no: Option<String> = conn.query_row(
-        "SELECT MAX(order_no) FROM orders WHERE order_no LIKE ?1",
-        [like],
-        |row| row.get(0),
-    )?;
-    let next = max_no
-        .and_then(|value| value[prefix.len()..].parse::<i64>().ok())
-        .unwrap_or(0)
-        + 1;
-    Ok(format!("{prefix}{next:03}"))
-}
-
-struct NewOrderItem<'a> {
-    order_id: i64,
-    line_type: &'a str,
-    product_id: Option<i64>,
-    product_name: Option<&'a str>,
-    category: Option<&'a str>,
-    barcode: Option<&'a str>,
-    quantity: f64,
-    unit_price: f64,
-    amount: f64,
-    avg_cost: f64,
-    cost_amount: f64,
-    profit_amount: f64,
-    related_product_id: Option<i64>,
-    rule_id: Option<i64>,
-    monthly_credit_id: Option<i64>,
-    remark: Option<&'a str>,
-    sort_order: i64,
-}
-
-struct NewMovement<'a> {
-    date: &'a str,
-    product_id: i64,
-    movement_type: &'a str,
-    quantity: f64,
-    unit_price: f64,
-    amount: f64,
-    order_id: i64,
-    order_no: &'a str,
-    remark: &'a str,
-}
-
-struct RuleEffectInput<'a> {
-    request: &'a SaveOrderRequest,
-    order_id: i64,
-    order_no: &'a str,
-    product: &'a ProductDto,
-    rule: &'a RuleRow,
-    quantity: f64,
-}
-
-fn insert_order_item(conn: &Connection, item: NewOrderItem<'_>) -> anyhow::Result<()> {
-    conn.execute(
-        "INSERT INTO order_items
-         (order_id, line_type, product_id, product_name, category, barcode, quantity,
-          unit_price, amount, avg_cost, cost_amount, profit_amount, related_product_id,
-          rule_id, monthly_credit_id, remark, sort_order)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
-        params![
-            item.order_id,
-            item.line_type,
-            item.product_id,
-            item.product_name,
-            item.category,
-            item.barcode,
-            item.quantity,
-            item.unit_price,
-            item.amount,
-            item.avg_cost,
-            item.cost_amount,
-            item.profit_amount,
-            item.related_product_id,
-            item.rule_id,
-            item.monthly_credit_id,
-            item.remark,
-            item.sort_order
-        ],
-    )?;
-    Ok(())
-}
-
-fn insert_movement(conn: &Connection, movement: NewMovement<'_>) -> anyhow::Result<()> {
-    conn.execute(
-        "INSERT INTO inventory_movements
-         (movement_date, product_id, movement_type, quantity, unit_price, amount,
-          source_type, source_id, source_no, remark, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'order', ?7, ?8, ?9, ?10)",
-        params![
-            normalize_date(movement.date),
-            movement.product_id,
-            movement.movement_type,
-            movement.quantity,
-            movement.unit_price,
-            movement.amount,
-            movement.order_id,
-            movement.order_no,
-            movement.remark,
-            now_text()
-        ],
-    )?;
-    Ok(())
-}
-
-fn apply_credit_uses(
-    tx: &Transaction<'_>,
-    order_id: i64,
-    order_no: &str,
-    sort_order: &mut i64,
-    totals: &mut OrderTotalsDto,
-    uses: Vec<MonthlyCreditUseRequest>,
-) -> anyhow::Result<()> {
-    for credit_use in uses {
-        if credit_use.amount <= 0.0 {
-            continue;
-        }
-        let credit: MonthlyCreditDto = tx.query_row(
-            "SELECT m.id, m.source_order_id, m.source_order_no, m.customer_id, c.name, m.category,
-                    m.amount, m.used_amount, m.remaining_amount, m.generated_date,
-                    m.available_month, m.status, m.remark
-             FROM monthly_credits m
-             JOIN customers c ON c.id = m.customer_id
-             WHERE m.id = ?1",
-            [credit_use.monthly_credit_id],
-            map_credit,
-        )?;
-        if credit.status != "available"
-            || credit.remaining_amount + f64::EPSILON < credit_use.amount
-        {
-            return Err(anyhow!("月费额度不可用或余额不足"));
-        }
-        let used = money(credit.used_amount + credit_use.amount);
-        let remaining = money(credit.remaining_amount - credit_use.amount);
-        let status = if remaining <= 0.0 {
-            "used_up"
-        } else {
-            "available"
-        };
-        tx.execute(
-            "UPDATE monthly_credits
-             SET used_amount = ?1, remaining_amount = ?2, status = ?3, updated_at = ?4
-             WHERE id = ?5",
-            params![used, remaining, status, now_text(), credit.id],
-        )?;
-        let remark = format!("使用月费 {}，来源 {}", credit_use.amount, order_no);
-        insert_order_item(
-            tx,
-            NewOrderItem {
-                order_id,
-                line_type: "credit",
-                product_id: None,
-                product_name: Some("月费抵扣"),
-                category: Some(&credit.category),
-                barcode: None,
-                quantity: 1.0,
-                unit_price: -credit_use.amount,
-                amount: -credit_use.amount,
-                avg_cost: 0.0,
-                cost_amount: 0.0,
-                profit_amount: 0.0,
-                related_product_id: None,
-                rule_id: None,
-                monthly_credit_id: Some(credit.id),
-                remark: Some(&remark),
-                sort_order: *sort_order,
-            },
-        )?;
-        *sort_order += 1;
-        totals.monthly_credit_used = money(totals.monthly_credit_used + credit_use.amount);
-    }
-    Ok(())
-}
-
-fn apply_rule_effects(
-    tx: &Transaction<'_>,
-    sort_order: &mut i64,
-    totals: &mut OrderTotalsDto,
-    input: RuleEffectInput<'_>,
-) -> anyhow::Result<()> {
-    let request = input.request;
-    let order_id = input.order_id;
-    let order_no = input.order_no;
-    let product = input.product;
-    let rule = input.rule;
-    let quantity = input.quantity;
-    let Some(threshold) = rule.threshold_quantity.filter(|value| *value > 0.0) else {
-        return Ok(());
-    };
-    let times = (quantity / threshold).floor();
-    if times <= 0.0 {
-        return Ok(());
-    }
-
-    if let (Some(gift_product_id), Some(gift_quantity)) = (rule.gift_product_id, rule.gift_quantity)
-    {
-        let total_gift_qty = money(times * gift_quantity);
-        if total_gift_qty > 0.0 {
-            let gift = db::product_by_id(tx, gift_product_id)?;
-            let gift_cost = money(gift.avg_cost * total_gift_qty);
-            insert_order_item(
-                tx,
-                NewOrderItem {
-                    order_id,
-                    line_type: "gift",
-                    product_id: Some(gift.id),
-                    product_name: Some(&gift.name),
-                    category: Some(&gift.category),
-                    barcode: gift.barcode.as_deref(),
-                    quantity: total_gift_qty,
-                    unit_price: 0.0,
-                    amount: 0.0,
-                    avg_cost: gift.avg_cost,
-                    cost_amount: gift_cost,
-                    profit_amount: -gift_cost,
-                    related_product_id: Some(product.id),
-                    rule_id: Some(rule.id),
-                    monthly_credit_id: None,
-                    remark: Some("赠品"),
-                    sort_order: *sort_order,
-                },
-            )?;
-            *sort_order += 1;
-            insert_movement(
-                tx,
-                NewMovement {
-                    date: &request.order_date,
-                    product_id: gift.id,
-                    movement_type: "gift_outbound",
-                    quantity: total_gift_qty,
-                    unit_price: 0.0,
-                    amount: 0.0,
-                    order_id,
-                    order_no,
-                    remark: "买赠赠品出库",
-                },
-            )?;
-            db::recalc_stock_balance(tx, gift.id)?;
-            totals.gift_cost_amount = money(totals.gift_cost_amount + gift_cost);
-            totals.cost_amount = money(totals.cost_amount + gift_cost);
-            totals.profit_amount = money(totals.profit_amount - gift_cost);
-        }
-    }
-
-    if let Some(discount) = rule.direct_discount_amount.filter(|value| *value > 0.0) {
-        let amount = money(times * discount);
-        insert_order_item(
-            tx,
-            NewOrderItem {
-                order_id,
-                line_type: "discount",
-                product_id: None,
-                product_name: Some("本单折现"),
-                category: Some(&product.category),
-                barcode: None,
-                quantity: 1.0,
-                unit_price: -amount,
-                amount: -amount,
-                avg_cost: 0.0,
-                cost_amount: 0.0,
-                profit_amount: -amount,
-                related_product_id: Some(product.id),
-                rule_id: Some(rule.id),
-                monthly_credit_id: None,
-                remark: Some("规则折现"),
-                sort_order: *sort_order,
-            },
-        )?;
-        *sort_order += 1;
-        totals.direct_discount_amount = money(totals.direct_discount_amount + amount);
-        totals.profit_amount = money(totals.profit_amount - amount);
-    }
-
-    if let Some(credit) = rule.monthly_credit_amount.filter(|value| *value > 0.0) {
-        let amount = money(times * credit);
-        let category = rule
-            .credit_category
-            .clone()
-            .unwrap_or_else(|| product.category.clone());
-        tx.execute(
-            "INSERT INTO monthly_credits
-             (source_order_id, source_order_no, customer_id, category, amount,
-              used_amount, remaining_amount, generated_date, available_month, status, remark,
-              created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, 0, ?5, ?6, ?7, 'pending', ?8, ?9, ?9)",
-            params![
-                order_id,
-                order_no,
-                request.customer_id,
-                category,
-                amount,
-                normalize_date(&request.order_date),
-                next_month(&request.order_date),
-                "规则生成月费",
-                now_text()
-            ],
-        )?;
-        totals.brand_subsidy_amount = money(totals.brand_subsidy_amount + amount);
-    }
-
-    Ok(())
-}
-
-fn refresh_credit_statuses(conn: &Connection) -> anyhow::Result<()> {
-    let current_month = chrono::Local::now().format("%Y-%m").to_string();
-    conn.execute(
-        "UPDATE monthly_credits
-         SET status = 'available', updated_at = ?1
-         WHERE status = 'pending' AND available_month <= ?2 AND remaining_amount > 0",
-        params![now_text(), current_month],
-    )?;
-    Ok(())
-}
-
-fn order_by_id(conn: &Connection, order_id: i64) -> anyhow::Result<OrderDto> {
-    conn.query_row(
-        "SELECT id, order_no, order_date, customer_id, customer_name, customer_address,
-                product_sales_amount, direct_discount_amount, monthly_credit_used,
-                customer_payable_amount, brand_subsidy_amount, cost_amount, gift_cost_amount,
-                profit_amount, remark, document_path, print_count, status
-         FROM orders WHERE id = ?1",
-        [order_id],
-        map_order,
-    )
-    .with_context(|| format!("订单不存在：{order_id}"))
-}
-
-fn map_order(row: &rusqlite::Row<'_>) -> rusqlite::Result<OrderDto> {
-    Ok(OrderDto {
-        id: row.get(0)?,
-        order_no: row.get(1)?,
-        order_date: row.get(2)?,
-        customer_id: row.get(3)?,
-        customer_name: row.get(4)?,
-        customer_address: row.get(5)?,
-        totals: OrderTotalsDto {
-            product_sales_amount: row.get(6)?,
-            direct_discount_amount: row.get(7)?,
-            monthly_credit_used: row.get(8)?,
-            customer_payable_amount: row.get(9)?,
-            brand_subsidy_amount: row.get(10)?,
-            cost_amount: row.get(11)?,
-            gift_cost_amount: row.get(12)?,
-            profit_amount: row.get(13)?,
-        },
-        remark: row.get(14)?,
-        document_path: row.get(15)?,
-        print_count: row.get(16)?,
-        status: row.get(17)?,
-    })
-}
-
-fn map_credit(row: &rusqlite::Row<'_>) -> rusqlite::Result<MonthlyCreditDto> {
-    Ok(MonthlyCreditDto {
-        id: row.get(0)?,
-        source_order_id: row.get(1)?,
-        source_order_no: row.get(2)?,
-        customer_id: row.get(3)?,
-        customer_name: row.get(4)?,
-        category: row.get(5)?,
-        amount: row.get(6)?,
-        used_amount: row.get(7)?,
-        remaining_amount: row.get(8)?,
-        generated_date: row.get(9)?,
-        available_month: row.get(10)?,
-        status: row.get(11)?,
-        remark: row.get(12)?,
-    })
-}
-
-fn escape_sql(value: &str) -> String {
-    value.replace('\'', "''")
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::db;
+    use crate::models::*;
+    use crate::utils::now_text;
+    use rusqlite::{params, Connection};
     use std::sync::{Arc, Barrier};
     use std::time::{Duration, Instant};
 
@@ -956,7 +44,7 @@ mod tests {
             [&now],
         )
         .unwrap();
-        let quote = preview_quote(
+        let quote = crate::services::order_service::preview_quote(
             &conn,
             PreviewQuoteRequest {
                 customer_id: 1,
@@ -1016,7 +104,7 @@ mod tests {
         )
         .unwrap();
 
-        let response = save_order(
+        let response = crate::services::order_service::save_order(
             &mut conn,
             SaveOrderRequest {
                 order_date: "2026-05-30".to_string(),
@@ -1045,7 +133,12 @@ mod tests {
             .unwrap();
         assert_eq!(stock_after_order, 8.0);
 
-        void_order(&mut conn, response.order_id, Some("测试作废".to_string())).unwrap();
+        crate::services::order_service::void_order(
+            &mut conn,
+            response.order_id,
+            Some("测试作废".to_string()),
+        )
+        .unwrap();
 
         let stock_after_void: f64 = conn
             .query_row(
@@ -1096,7 +189,7 @@ mod tests {
         )
         .unwrap();
 
-        let rows = list_orders(
+        let rows = crate::services::order_service::list_orders(
             &conn,
             ListOrdersRequest {
                 start_date: Some("2026-06-01".to_string()),
@@ -1111,6 +204,91 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].order_no, "20260601001");
         assert_eq!(rows[0].customer_name, "客户A");
+    }
+
+    #[test]
+    fn list_orders_and_credits_treat_sql_fragments_as_text() {
+        let conn = Connection::open_in_memory().unwrap();
+        db::init_schema(&conn).unwrap();
+        let now = now_text();
+        conn.execute(
+            "INSERT INTO customers (region, name, is_active, created_at, updated_at)
+             VALUES ('安全', '安全客户', 1, ?1, ?1)",
+            [&now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO orders
+             (order_no, order_date, customer_id, customer_name, customer_payable_amount, status, created_at, updated_at)
+             VALUES
+             ('SAFE-001', '2026-06-01', 1, '安全客户', 10, 'normal', ?1, ?1),
+             ('QUOTE-001', '2026-06-02', 1, '安全客户', 20, 'voided', ?1, ?1)",
+            [&now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO monthly_credits
+             (source_order_id, source_order_no, customer_id, category, amount, used_amount, remaining_amount,
+              generated_date, available_month, status, created_at, updated_at)
+             VALUES
+             (1, 'SAFE-001', 1, '特殊''类别', 30, 0, 30, '2026-06-01', '2026-07', 'pending', ?1, ?1)",
+            [&now],
+        )
+        .unwrap();
+
+        let injected_orders = crate::services::order_service::list_orders(
+            &conn,
+            ListOrdersRequest {
+                start_date: None,
+                end_date: None,
+                customer_id: None,
+                order_no: Some("' OR 1=1 --".to_string()),
+                status: Some("normal' OR 1=1 --".to_string()),
+            },
+        )
+        .unwrap();
+        let quoted_orders = crate::services::order_service::list_orders(
+            &conn,
+            ListOrdersRequest {
+                start_date: None,
+                end_date: None,
+                customer_id: None,
+                order_no: Some("SAFE".to_string()),
+                status: Some("normal".to_string()),
+            },
+        )
+        .unwrap();
+        let injected_credits = crate::services::order_service::list_monthly_credits(
+            &conn,
+            MonthlyCreditFilterRequest {
+                customer_id: Some(1),
+                category: Some("' OR 1=1 --".to_string()),
+                status: Some("pending' OR 1=1 --".to_string()),
+                start_date: None,
+                end_date: None,
+                available_month: None,
+            },
+        )
+        .unwrap();
+        let quoted_credits = crate::services::order_service::list_monthly_credits(
+            &conn,
+            MonthlyCreditFilterRequest {
+                customer_id: Some(1),
+                category: Some("特殊'类别".to_string()),
+                status: Some("pending".to_string()),
+                start_date: None,
+                end_date: None,
+                available_month: Some("2026-07".to_string()),
+            },
+        )
+        .unwrap();
+
+        assert!(injected_orders.is_empty());
+        assert_eq!(quoted_orders.len(), 1);
+        assert_eq!(quoted_orders[0].order_no, "SAFE-001");
+        assert!(injected_credits.is_empty());
+        assert_eq!(quoted_credits.len(), 1);
+        assert_eq!(quoted_credits[0].category, "特殊'类别");
     }
 
     #[test]
@@ -1142,16 +320,20 @@ mod tests {
         )
         .unwrap();
 
-        let available =
-            available_monthly_credits(&conn, 1, "饮料".to_string(), "2026-06-15".to_string())
-                .unwrap();
+        let available = crate::services::order_service::available_monthly_credits(
+            &conn,
+            1,
+            "饮料".to_string(),
+            "2026-06-15".to_string(),
+        )
+        .unwrap();
         assert_eq!(available.len(), 1);
         assert_eq!(available[0].remaining_amount, 30.0);
 
-        close_or_void_credit(&conn, 1, "closed").unwrap();
-        close_or_void_credit(&conn, 2, "voided").unwrap();
+        crate::services::order_service::close_or_void_credit(&conn, 1, "closed").unwrap();
+        crate::services::order_service::close_or_void_credit(&conn, 2, "voided").unwrap();
 
-        let closed = list_monthly_credits(
+        let closed = crate::services::order_service::list_monthly_credits(
             &conn,
             MonthlyCreditFilterRequest {
                 customer_id: Some(1),
@@ -1163,7 +345,7 @@ mod tests {
             },
         )
         .unwrap();
-        let voided = list_monthly_credits(
+        let voided = crate::services::order_service::list_monthly_credits(
             &conn,
             MonthlyCreditFilterRequest {
                 customer_id: Some(1),
@@ -1223,7 +405,7 @@ mod tests {
                     let mut conn = Connection::open(db_path).unwrap();
                     conn.busy_timeout(Duration::from_secs(10)).unwrap();
                     barrier.wait();
-                    save_order(
+                    crate::services::order_service::save_order(
                         &mut conn,
                         SaveOrderRequest {
                             order_date: "2026-06-01".to_string(),
@@ -1311,7 +493,7 @@ mod tests {
         };
 
         let started = Instant::now();
-        let response = save_order(&mut conn, request).unwrap();
+        let response = crate::services::order_service::save_order(&mut conn, request).unwrap();
         let elapsed = started.elapsed();
         let item_count: i64 = conn
             .query_row(
@@ -1362,7 +544,7 @@ mod tests {
         tx.commit().unwrap();
 
         let started = Instant::now();
-        let rows = list_orders(
+        let rows = crate::services::order_service::list_orders(
             &conn,
             ListOrdersRequest {
                 start_date: Some("2026-06-01".to_string()),

@@ -1,6 +1,6 @@
 [package]
 name = "easyinventory"
-version = "1.3.0"
+version = "1.3.1"
 description = "本地库存计价打单软件"
 authors = ["EasyInventory"]
 edition = "2021"

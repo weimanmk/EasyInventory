@@ -7,12 +7,10 @@ import {
   Descriptions,
   Form,
   Input,
-  InputNumber,
   List,
   Select,
   Space,
   Statistic,
-  Switch,
   Table,
   Tag,
   Typography
@@ -40,6 +38,15 @@ import type {
   TermSettingsDto
 } from '../shared/types';
 import { defaultFeatures, defaultMerchant, defaultTerms, useAppStore } from '../store/appStore';
+import { AuditLogCard } from './settings/AuditLogCard';
+import { BackupRestoreCard } from './settings/BackupRestoreCard';
+import { DiagnosticsCard } from './settings/DiagnosticsCard';
+import { DocumentTemplateSettingsCard } from './settings/DocumentTemplateSettingsCard';
+import { IndustryFeatureCard } from './settings/IndustryFeatureCard';
+import { LocalPathsCard } from './settings/LocalPathsCard';
+import { MerchantProfileCard } from './settings/MerchantProfileCard';
+import { SetupGuideCard } from './settings/SetupGuideCard';
+import { TermSettingsCard } from './settings/TermSettingsCard';
 
 type GenericImportForm = {
   importType: GenericImportRequest['importType'];
@@ -53,17 +60,6 @@ const genericImportTypeOptions = [
   { value: 'products', label: '通用商品导入' },
   { value: 'customers', label: '通用客户导入' },
   { value: 'initial_stock', label: '通用期初库存导入' }
-];
-
-const featureItems: Array<{ name: keyof FeatureFlagsDto; label: string }> = [
-  { name: 'supplierLedger', label: '供应商采购台账' },
-  { name: 'customerRules', label: '价格规则' },
-  { name: 'monthlyCredit', label: '返利额度' },
-  { name: 'receivables', label: '欠款收款' },
-  { name: 'productRanking', label: '商品经营排行' },
-  { name: 'customerAnalysis', label: '客户经营分析' },
-  { name: 'inventoryControl', label: '库存盘点' },
-  { name: 'diagnostics', label: '诊断中心' }
 ];
 
 export default function SettingsPage() {
@@ -467,182 +463,28 @@ export default function SettingsPage() {
   return (
     <div className="page">
       <div className="page-title"><Typography.Title level={2}>系统设置</Typography.Title></div>
-      <Card title="本地路径">
-        <Descriptions column={1} size="small">
-          <Descriptions.Item label="数据库">{appStatus?.databasePath}</Descriptions.Item>
-          <Descriptions.Item label="数据目录">{appStatus?.dataDir}</Descriptions.Item>
-          <Descriptions.Item label="订单目录">{appStatus?.ordersDir}</Descriptions.Item>
-          <Descriptions.Item label="导出目录">{appStatus?.exportsDir}</Descriptions.Item>
-          <Descriptions.Item label="备份目录">{appStatus?.backupsDir}</Descriptions.Item>
-          <Descriptions.Item label="日志目录">{appStatus?.logsDir}</Descriptions.Item>
-          <Descriptions.Item label="版本">{appStatus?.version}</Descriptions.Item>
-        </Descriptions>
-      </Card>
-      <Card title="初始化向导">
-        <Space direction="vertical" style={{ width: '100%' }}>
-          <Alert
-            type="info"
-            showIcon
-            message="可重新打开初始化向导调整商户、行业模板、术语、功能开关和默认单据设置。该操作不会清空已有业务数据。"
-          />
-          <Button onClick={reopenSetup}>重新打开初始化向导</Button>
-        </Space>
-      </Card>
-      <Form form={merchantForm} layout="vertical" className="dense-form">
-        <Card title="商户信息">
-          <Space.Compact block>
-            <Form.Item label="商户名称" name="name" rules={[{ required: true, message: '请输入商户名称' }]} style={{ width: '25%' }}>
-              <Input />
-            </Form.Item>
-            <Form.Item label="联系人" name="contact" style={{ width: '25%' }}>
-              <Input />
-            </Form.Item>
-            <Form.Item label="电话" name="phone" style={{ width: '25%' }}>
-              <Input />
-            </Form.Item>
-            <Form.Item label="地址" name="address" style={{ width: '25%' }}>
-              <Input />
-            </Form.Item>
-          </Space.Compact>
-          <Space.Compact block>
-            <Form.Item label="Logo 路径" name="logoPath" style={{ width: '50%' }}>
-              <Input placeholder="可选，例如 C:/Users/ww/Desktop/logo.png" />
-            </Form.Item>
-            <Form.Item label="备注" name="remark" style={{ width: '50%' }}>
-              <Input />
-            </Form.Item>
-          </Space.Compact>
-          <Space>
-            <Button type="primary" onClick={() => void saveMerchant()}>保存商户信息</Button>
-            <Typography.Text type="secondary">当前单据抬头：{merchant.name || '我的商行'}</Typography.Text>
-          </Space>
-        </Card>
-      </Form>
-      <Card title="行业模板与功能开关">
-        <Table
-          rowKey="id"
-          size="small"
-          dataSource={industryTemplates}
-          pagination={false}
-          columns={[
-            { title: '模板', dataIndex: 'name', width: 140 },
-            { title: '说明', dataIndex: 'description' },
-            { title: '默认单据', dataIndex: 'orderTemplate', width: 120 },
-            {
-              title: '操作',
-              width: 100,
-              render: (_, row) => <Button size="small" onClick={() => applyIndustryTemplate(row)}>应用</Button>
-            }
-          ]}
-        />
-        <Form form={featuresForm} layout="vertical" className="dense-form" style={{ marginTop: 12 }}>
-          <div className="feature-grid">
-            {featureItems.map((item) => (
-              <Form.Item key={item.name} label={item.label} name={item.name} valuePropName="checked">
-                <Switch />
-              </Form.Item>
-            ))}
-          </div>
-          <Button onClick={() => void saveFeatures()}>保存功能开关</Button>
-        </Form>
-      </Card>
-      <Form form={termsForm} layout="vertical" className="dense-form">
-        <Card title="业务术语">
-          <Space.Compact block>
-            <Form.Item label="客户显示名" name="customer" style={{ width: '25%' }}><Input /></Form.Item>
-            <Form.Item label="地区显示名" name="region" style={{ width: '25%' }}><Input /></Form.Item>
-            <Form.Item label="商品显示名" name="product" style={{ width: '25%' }}><Input /></Form.Item>
-            <Form.Item label="类别显示名" name="category" style={{ width: '25%' }}><Input /></Form.Item>
-          </Space.Compact>
-          <Space.Compact block>
-            <Form.Item label="规则显示名" name="rule" style={{ width: '33.33%' }}><Input /></Form.Item>
-            <Form.Item label="额度显示名" name="credit" style={{ width: '33.33%' }}><Input /></Form.Item>
-            <Form.Item label="默认客户显示名" name="guestCustomer" style={{ width: '33.33%' }}><Input /></Form.Item>
-          </Space.Compact>
-          <Button type="primary" onClick={() => void saveTerms()}>保存术语配置</Button>
-        </Card>
-      </Form>
-      <Form form={settingsForm} layout="vertical" className="dense-form">
-        <Card title="系统与单据模板设置">
-          <Space.Compact block>
-            <Form.Item label="每日自动备份" name="dailyAutoBackup" valuePropName="checked" style={{ width: '25%' }}>
-              <Switch />
-            </Form.Item>
-            <Form.Item label="默认打印模板" name="defaultPrintTemplate" style={{ width: '25%' }}>
-              <Select options={documentTemplates.map((item) => ({ value: item.id, label: item.name }))} />
-            </Form.Item>
-            <Form.Item label="默认导出格式" name="defaultExportFormat" style={{ width: '25%' }}>
-              <Select options={[{ value: 'xlsx', label: 'Excel xlsx' }]} />
-            </Form.Item>
-            <Form.Item label="默认打印机" name="defaultPrinter" style={{ width: '25%' }}>
-              <Select allowClear options={printers.map((item) => ({ value: item, label: item }))} />
-            </Form.Item>
-          </Space.Compact>
-          <Space.Compact block>
-            <Form.Item label="店名" name="templateStoreName" style={{ width: '25%' }}>
-              <Input />
-            </Form.Item>
-            <Form.Item label="页脚/默认备注" name="templateFooterText" style={{ width: '25%' }}>
-              <Input />
-            </Form.Item>
-            <Form.Item label="纸张方向" name="templateOrientation" style={{ width: '20%' }}>
-              <Select options={[{ value: 'portrait', label: '纵向' }, { value: 'landscape', label: '横向' }]} />
-            </Form.Item>
-            <Form.Item label="页边距" name="templateMargin" style={{ width: '15%' }}>
-              <InputNumber min={0} max={2} step={0.1} style={{ width: '100%' }} />
-            </Form.Item>
-            <Form.Item label="显示条码" name="templateShowBarcode" valuePropName="checked" style={{ width: '15%' }}>
-              <Switch />
-            </Form.Item>
-          </Space.Compact>
-          <Space.Compact block>
-            <Form.Item label="商品列名" name="templateProductLabel" style={{ width: '20%' }}><Input /></Form.Item>
-            <Form.Item label="数量列名" name="templateQuantityLabel" style={{ width: '20%' }}><Input /></Form.Item>
-            <Form.Item label="价格列名" name="templatePriceLabel" style={{ width: '20%' }}><Input /></Form.Item>
-            <Form.Item label="金额列名" name="templateAmountLabel" style={{ width: '20%' }}><Input /></Form.Item>
-            <Form.Item label="备注列名" name="templateRemarkLabel" style={{ width: '20%' }}><Input /></Form.Item>
-          </Space.Compact>
-          <div className="template-preview">
-            <div className="template-preview-title">{templateValues.templateStoreName || merchant.name || '我的商行'}</div>
-            <div className="template-preview-meta">
-              {terms.customer}：测试{terms.customer}　单号：20260601001　方向：{templateValues.templateOrientation === 'landscape' ? '横向' : '纵向'}
-            </div>
-            <div className="template-preview-row">
-              <span>{templateValues.templateShowBarcode === false ? '' : '条码'}</span>
-              <span>{templateValues.templateProductLabel || '商品名称'}</span>
-              <span>{templateValues.templateQuantityLabel || '数量'}</span>
-              <span>{templateValues.templatePriceLabel || '价格'}</span>
-              <span>{templateValues.templateAmountLabel || '总价格'}</span>
-              <span>{templateValues.templateRemarkLabel || '备注'}</span>
-            </div>
-            <div className="template-preview-footer">{templateValues.templateFooterText || '页脚/默认备注'}</div>
-          </div>
-          <Space>
-            <Button type="primary" onClick={() => void saveSettings()}>保存设置</Button>
-            <Button
-              onClick={() => settingsForm.setFieldsValue({
-                templateStoreName: merchant.name || '我的商行',
-                templateFooterText: '',
-                templateShowBarcode: true,
-                templateProductLabel: '商品名称',
-                templateQuantityLabel: '数量',
-                templatePriceLabel: '价格',
-                templateAmountLabel: '总价格',
-                templateRemarkLabel: '备注',
-                templateOrientation: 'portrait',
-                templateMargin: 0
-              })}
-            >
-              恢复默认模板
-            </Button>
-            {documentTemplates.map((item) => (
-              <Button key={item.id} onClick={() => void applyDocumentTemplate(item.id)}>{item.name}</Button>
-            ))}
-            <Button onClick={() => void api.openExportsFolder()}>打开导出目录</Button>
-            <Button onClick={() => void api.openLogsFolder()}>打开日志目录</Button>
-          </Space>
-        </Card>
-      </Form>
+      <LocalPathsCard appStatus={appStatus} />
+      <SetupGuideCard onReopen={reopenSetup} />
+      <MerchantProfileCard form={merchantForm} merchant={merchant} onSave={() => void saveMerchant()} />
+      <IndustryFeatureCard
+        form={featuresForm}
+        industryTemplates={industryTemplates}
+        onApplyTemplate={applyIndustryTemplate}
+        onSaveFeatures={() => void saveFeatures()}
+      />
+      <TermSettingsCard form={termsForm} onSave={() => void saveTerms()} />
+      <DocumentTemplateSettingsCard
+        form={settingsForm}
+        documentTemplates={documentTemplates}
+        merchant={merchant}
+        terms={terms}
+        printers={printers}
+        templateValues={templateValues}
+        onSave={() => void saveSettings()}
+        onApplyTemplate={(templateId) => void applyDocumentTemplate(templateId)}
+        onOpenExportsFolder={() => void api.openExportsFolder()}
+        onOpenLogsFolder={() => void api.openLogsFolder()}
+      />
       <Form form={genericImportForm} layout="vertical" className="dense-form">
         <Card title="通用数据导入">
           <Alert
@@ -825,114 +667,27 @@ export default function SettingsPage() {
           }
         ]}
       />
-      <Card title="备份与恢复">
-        <Space>
-          <Button onClick={() => void backup()}>立即备份</Button>
-          <Button onClick={() => void api.openBackupFolder()}>打开备份目录</Button>
-        </Space>
-        <Table
-          rowKey="id"
-          size="small"
-          style={{ marginTop: 12 }}
-          dataSource={backups}
-          columns={[
-            { title: '时间', dataIndex: 'createdAt', width: 160 },
-            { title: '类型', dataIndex: 'backupType', width: 120 },
-            { title: '状态', render: (_, row) => statusTag(row.status), width: 100 },
-            { title: '路径', dataIndex: 'backupPath' },
-            {
-              title: '操作',
-              width: 100,
-              render: (_, row) => (
-                <Button size="small" danger disabled={row.status !== 'success'} onClick={() => restoreBackup(row)}>
-                  恢复
-                </Button>
-              )
-            }
-          ]}
-        />
-      </Card>
+      <BackupRestoreCard
+        backups={backups}
+        onBackup={() => void backup()}
+        onOpenBackupFolder={() => void api.openBackupFolder()}
+        onRestoreBackup={restoreBackup}
+      />
       {features.diagnostics && (
-        <Card title="诊断中心">
-          <Space style={{ marginBottom: 12 }}>
-            <Button type="primary" onClick={() => void runSelfCheck()}>运行数据自检</Button>
-            <Button onClick={() => void exportSelfCheck()}>导出自检结果</Button>
-            <Button onClick={() => void exportDiagnosticPackage()}>导出诊断包</Button>
-            <Button onClick={() => void refresh()}>刷新诊断信息</Button>
-          </Space>
-          <Descriptions column={2} size="small">
-            <Descriptions.Item label="数据库">{diagnostic?.databasePath ?? appStatus?.databasePath}</Descriptions.Item>
-            <Descriptions.Item label="数据库大小">{diagnostic?.databaseSize ?? 0} B</Descriptions.Item>
-            <Descriptions.Item label="版本">{diagnostic?.version ?? appStatus?.version}</Descriptions.Item>
-            <Descriptions.Item label="备份数量">{diagnostic?.backupCount ?? backups.length}</Descriptions.Item>
-            <Descriptions.Item label="最近备份">{diagnostic?.latestBackupAt ?? '-'}</Descriptions.Item>
-            <Descriptions.Item label="基础统计">
-              商品 {diagnostic?.productCount ?? 0} / 客户 {diagnostic?.customerCount ?? 0} / 订单 {diagnostic?.orderCount ?? 0} / 单据 {diagnostic?.documentCount ?? 0}
-            </Descriptions.Item>
-          </Descriptions>
-          {selfCheck && (
-            <div style={{ marginTop: 12 }}>
-              <Descriptions column={4} size="small">
-                <Descriptions.Item label="自检时间">{selfCheck.checkedAt}</Descriptions.Item>
-                <Descriptions.Item label="异常数">{selfCheck.issueCount}</Descriptions.Item>
-                <Descriptions.Item label="库存">{selfCheck.inventoryChecked}</Descriptions.Item>
-                <Descriptions.Item label="订单">{selfCheck.ordersChecked}</Descriptions.Item>
-                <Descriptions.Item label="月费">{selfCheck.creditsChecked}</Descriptions.Item>
-                <Descriptions.Item label="单据">{selfCheck.documentsChecked}</Descriptions.Item>
-              </Descriptions>
-              <Table
-                rowKey={(row) => `${row.checkCode}-${row.targetType}-${row.targetId ?? row.targetLabel}`}
-                size="small"
-                dataSource={selfCheck.issues}
-                columns={[
-                  { title: '级别', render: (_, row) => statusTag(row.severity), width: 90 },
-                  { title: '检查项', dataIndex: 'checkCode', width: 170 },
-                  { title: '对象', dataIndex: 'targetLabel', width: 180 },
-                  { title: '说明', dataIndex: 'message' },
-                  { title: '详情', dataIndex: 'details' }
-                ]}
-              />
-            </div>
-          )}
-          <Card size="small" title="最近日志" style={{ marginTop: 12 }}>
-            <List
-              size="small"
-              dataSource={diagnostic?.latestLogs ?? []}
-              renderItem={(item) => <List.Item>{item}</List.Item>}
-            />
-          </Card>
-        </Card>
-      )}
-      <Card title="审计日志">
-        <Table
-          rowKey="id"
-          size="small"
-          dataSource={auditLogs}
-          columns={[
-            { title: '时间', dataIndex: 'logTime', width: 170 },
-            { title: '模块', dataIndex: 'module', width: 110 },
-            { title: '动作', dataIndex: 'action', width: 140 },
-            { title: '对象', dataIndex: 'targetLabel' },
-            { title: '结果', render: (_, row) => statusTag(row.result), width: 90 },
-            { title: '说明', dataIndex: 'message' }
-          ]}
+        <DiagnosticsCard
+          appStatus={appStatus}
+          backups={backups}
+          diagnostic={diagnostic}
+          selfCheck={selfCheck}
+          onRunSelfCheck={() => void runSelfCheck()}
+          onExportSelfCheck={() => void exportSelfCheck()}
+          onExportDiagnosticPackage={() => void exportDiagnosticPackage()}
+          onRefresh={() => void refresh()}
         />
-      </Card>
+      )}
+      <AuditLogCard auditLogs={auditLogs} />
     </div>
   );
-}
-
-function statusTag(status: string) {
-  if (status === 'success' || status === 'normal') {
-    return <Tag color="green">{status}</Tag>;
-  }
-  if (status === 'warning') {
-    return <Tag color="orange">{status}</Tag>;
-  }
-  if (status === 'voided' || status === 'failed' || status === 'error') {
-    return <Tag color="red">{status}</Tag>;
-  }
-  return <Tag>{status}</Tag>;
 }
 
 function actionText(action: string) {

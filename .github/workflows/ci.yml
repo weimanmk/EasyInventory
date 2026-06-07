@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: TypeScript typecheck
+        run: npm run typecheck
+
+      - name: Frontend build
+        run: npm run build
+
+      - name: Rust format
+        run: npm run format:rust
+
+      - name: Rust clippy
+        run: npm run lint:rust
+
+      - name: Rust tests
+        run: npm run test:rust
+
+      - name: Source flow checks
+        run: npm run e2e:flows
+
+      - name: Install Playwright browser
+        run: npx playwright install chrome
+
+      - name: Browser E2E
+        run: npm run e2e:browser
+
+      - name: Robustness audit
+        run: npm run audit:robustness

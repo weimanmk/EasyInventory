@@ -1,12 +1,15 @@
 mod app;
 mod commands;
 mod db;
+mod domain;
 mod excel;
 mod generalization;
 mod logger;
 mod models;
 mod orders;
 mod reports;
+mod repositories;
+mod services;
 mod utils;
 
 use app::AppState;

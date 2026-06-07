@@ -1,5 +1,17 @@
-import * as echarts from 'echarts';
-import type { ECharts, EChartsOption } from 'echarts';
+import type { EChartsOption } from 'echarts';
+import * as echarts from 'echarts/core';
+import type { EChartsType } from 'echarts/core';
+import {
+  BarChart,
+  LineChart,
+  PieChart
+} from 'echarts/charts';
+import {
+  GridComponent,
+  LegendComponent,
+  TooltipComponent
+} from 'echarts/components';
+import { CanvasRenderer } from 'echarts/renderers';
 import { useEffect, useRef } from 'react';
 
 type EChartProps = {
@@ -9,9 +21,19 @@ type EChartProps = {
   emptyText?: string;
 };
 
+echarts.use([
+  BarChart,
+  LineChart,
+  PieChart,
+  GridComponent,
+  LegendComponent,
+  TooltipComponent,
+  CanvasRenderer
+]);
+
 export default function EChart({ option, height = 320, empty = false, emptyText = '暂无统计数据' }: EChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const chartRef = useRef<ECharts | null>(null);
+  const chartRef = useRef<EChartsType | null>(null);
 
   useEffect(() => {
     const container = containerRef.current;

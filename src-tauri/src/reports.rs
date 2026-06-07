@@ -1,18 +1,12 @@
 use crate::app::AppState;
 use crate::models::{
-    CustomerAnalysisDto, CustomerAnalysisRequest, CustomerAnalysisRowDto, CustomerStatementDto,
-    CustomerStatementRequest, CustomerStatementRowDto, CustomerStatementSummaryDto,
-    DailyProfitSummary, DocumentDto, DocumentFilterRequest, ExportDataRequest, InboundRecordDto,
-    InventoryReportRequest, InventoryReportRowDto, MonthlyCreditFilterRequest, PrintStatusDto,
-    ProductRankingRequest, ProductRankingRowDto, ProfitAnalyticsMetricDto, ProfitAnalyticsRequest,
-    ProfitAnalyticsResponse, ProfitAnalyticsTrendPointDto, ProfitBreakdownDto, ProfitFilterRequest,
-    SupplierPurchaseLedgerDto, SupplierPurchaseLedgerRequest, SupplierPurchaseSummaryDto,
-    SupplierPurchaseTrendPointDto,
+    CustomerAnalysisRequest, CustomerStatementDto, CustomerStatementRequest, ExportDataRequest,
+    InventoryReportRequest, MonthlyCreditFilterRequest, ProductRankingRequest, ProfitFilterRequest,
 };
-use crate::utils::{money, normalize_date, now_text, safe_file_name};
-use anyhow::{anyhow, Context};
-use chrono::{Datelike, Duration, NaiveDate};
-use rusqlite::{params, Connection};
+use crate::services::customer_statement_service;
+use crate::utils::{money, now_text, safe_file_name};
+use anyhow::anyhow;
+use rusqlite::{params, params_from_iter, types::Value, Connection};
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
@@ -97,336 +91,9 @@ fn setting_float(conn: &Connection, key: &str, default: f64) -> anyhow::Result<f
         .unwrap_or(default))
 }
 
-pub fn daily_profit_summary(conn: &Connection, date: &str) -> anyhow::Result<DailyProfitSummary> {
-    conn.query_row(
-        "SELECT
-           COUNT(*),
-           COALESCE(SUM(product_sales_amount), 0),
-           COALESCE(SUM(customer_payable_amount), 0),
-           COALESCE(SUM(direct_discount_amount), 0),
-           COALESCE(SUM(monthly_credit_used), 0),
-           COALESCE(SUM(brand_subsidy_amount), 0),
-           COALESCE(SUM(cost_amount), 0),
-           COALESCE(SUM(gift_cost_amount), 0),
-           COALESCE(SUM(profit_amount), 0)
-         FROM orders
-         WHERE order_date = ?1 AND status = 'normal'",
-        [date],
-        |row| {
-            Ok(DailyProfitSummary {
-                date: date.to_string(),
-                order_count: row.get(0)?,
-                product_sales_amount: row.get(1)?,
-                customer_payable_amount: row.get(2)?,
-                direct_discount_amount: row.get(3)?,
-                monthly_credit_used: row.get(4)?,
-                brand_subsidy_amount: row.get(5)?,
-                cost_amount: row.get(6)?,
-                gift_cost_amount: row.get(7)?,
-                profit_amount: row.get(8)?,
-            })
-        },
-    )
-    .map_err(Into::into)
-}
-
-pub fn get_profit_analytics(
-    conn: &Connection,
-    request: ProfitAnalyticsRequest,
-) -> anyhow::Result<ProfitAnalyticsResponse> {
-    if request.start_date.trim().is_empty() || request.end_date.trim().is_empty() {
-        return Err(anyhow!("利润统计日期范围不能为空"));
-    }
-    let period_expr = profit_period_expression(&request.period)?;
-    let order_where = profit_order_where(&request);
-    let summary = profit_analytics_summary(conn, &order_where)?;
-    let trend = profit_analytics_trend(conn, &request, period_expr, &order_where)?;
-    let category_breakdown = profit_analytics_category_breakdown(conn, &request, &order_where)?;
-    let customer_breakdown = profit_analytics_customer_breakdown(conn, &order_where)?;
-
-    Ok(ProfitAnalyticsResponse {
-        summary,
-        trend,
-        category_breakdown,
-        customer_breakdown,
-    })
-}
-
-fn profit_period_expression(period: &str) -> anyhow::Result<&'static str> {
-    match period {
-        "day" => Ok("o.order_date"),
-        "month" => Ok("substr(o.order_date, 1, 7)"),
-        "year" => Ok("substr(o.order_date, 1, 4)"),
-        _ => Err(anyhow!("不支持的利润统计周期: {period}")),
-    }
-}
-
-fn profit_order_where(request: &ProfitAnalyticsRequest) -> String {
-    profit_order_where_for_dates(request, &request.start_date, &request.end_date)
-}
-
-fn profit_order_where_for_dates(
-    request: &ProfitAnalyticsRequest,
-    start_date: &str,
-    end_date: &str,
-) -> String {
-    let mut conditions = vec![
-        "o.status = 'normal'".to_string(),
-        format!("o.order_date >= '{}'", escape_sql(start_date)),
-        format!("o.order_date <= '{}'", escape_sql(end_date)),
-    ];
-    if let Some(customer_id) = request.customer_id {
-        conditions.push(format!("o.customer_id = {customer_id}"));
-    }
-    if let Some(category) = active_category(request.category.as_deref()) {
-        conditions.push(format!(
-            "EXISTS (
-               SELECT 1 FROM order_items oi_filter
-               WHERE oi_filter.order_id = o.id AND oi_filter.category = '{}'
-             )",
-            escape_sql(category)
-        ));
-    }
-    conditions.join(" AND ")
-}
-
-fn active_category(category: Option<&str>) -> Option<&str> {
-    category
-        .map(str::trim)
-        .filter(|value| !value.is_empty() && *value != "全部")
-}
-
-fn profit_analytics_summary(
-    conn: &Connection,
-    order_where: &str,
-) -> anyhow::Result<ProfitAnalyticsMetricDto> {
-    let sql = format!(
-        "SELECT
-           COUNT(*),
-           COALESCE(SUM(product_sales_amount), 0),
-           COALESCE(SUM(customer_payable_amount), 0),
-           COALESCE(SUM(direct_discount_amount), 0),
-           COALESCE(SUM(monthly_credit_used), 0),
-           COALESCE(SUM(brand_subsidy_amount), 0),
-           COALESCE(SUM(cost_amount), 0),
-           COALESCE(SUM(gift_cost_amount), 0),
-           COALESCE(SUM(profit_amount), 0)
-         FROM orders o
-         WHERE {order_where}"
-    );
-    conn.query_row(&sql, [], |row| {
-        Ok(ProfitAnalyticsMetricDto {
-            order_count: row.get(0)?,
-            product_sales_amount: row.get(1)?,
-            customer_payable_amount: row.get(2)?,
-            direct_discount_amount: row.get(3)?,
-            monthly_credit_used: row.get(4)?,
-            brand_subsidy_amount: row.get(5)?,
-            cost_amount: row.get(6)?,
-            gift_cost_amount: row.get(7)?,
-            profit_amount: row.get(8)?,
-        })
-    })
-    .map_err(Into::into)
-}
-
-fn profit_analytics_trend(
-    conn: &Connection,
-    request: &ProfitAnalyticsRequest,
-    period_expr: &str,
-    order_where: &str,
-) -> anyhow::Result<Vec<ProfitAnalyticsTrendPointDto>> {
-    let sql = format!(
-        "SELECT
-           {period_expr},
-           COUNT(*),
-           COALESCE(SUM(product_sales_amount), 0),
-           COALESCE(SUM(customer_payable_amount), 0),
-           COALESCE(SUM(direct_discount_amount), 0),
-           COALESCE(SUM(monthly_credit_used), 0),
-           COALESCE(SUM(brand_subsidy_amount), 0),
-           COALESCE(SUM(cost_amount), 0),
-           COALESCE(SUM(gift_cost_amount), 0),
-           COALESCE(SUM(profit_amount), 0)
-         FROM orders o
-         WHERE {order_where}
-         GROUP BY 1
-         ORDER BY 1"
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let mut rows = stmt
-        .query_map([], |row| {
-            Ok(ProfitAnalyticsTrendPointDto {
-                period: row.get(0)?,
-                order_count: row.get(1)?,
-                product_sales_amount: row.get(2)?,
-                customer_payable_amount: row.get(3)?,
-                direct_discount_amount: row.get(4)?,
-                monthly_credit_used: row.get(5)?,
-                brand_subsidy_amount: row.get(6)?,
-                cost_amount: row.get(7)?,
-                gift_cost_amount: row.get(8)?,
-                profit_amount: row.get(9)?,
-                comparison_period: None,
-                comparison_sales_amount: None,
-                comparison_profit_amount: None,
-                sales_change_amount: None,
-                sales_change_rate: None,
-                profit_change_amount: None,
-                profit_change_rate: None,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    for row in &mut rows {
-        let (comparison_period, start_date, end_date) =
-            profit_comparison_range(&request.period, &row.period)?;
-        let comparison_where = profit_order_where_for_dates(request, &start_date, &end_date);
-        let comparison = profit_analytics_summary(conn, &comparison_where)?;
-        row.comparison_period = Some(comparison_period);
-        row.comparison_sales_amount = Some(money(comparison.product_sales_amount));
-        row.comparison_profit_amount = Some(money(comparison.profit_amount));
-        row.sales_change_amount = Some(money(
-            row.product_sales_amount - comparison.product_sales_amount,
-        ));
-        row.sales_change_rate =
-            percent_change(row.product_sales_amount, comparison.product_sales_amount);
-        row.profit_change_amount = Some(money(row.profit_amount - comparison.profit_amount));
-        row.profit_change_rate = percent_change(row.profit_amount, comparison.profit_amount);
-    }
-    Ok(rows)
-}
-
-fn profit_comparison_range(
-    period_type: &str,
-    period: &str,
-) -> anyhow::Result<(String, String, String)> {
-    match period_type {
-        "day" => {
-            let current = NaiveDate::parse_from_str(period, "%Y-%m-%d")?;
-            let previous = current - Duration::days(1);
-            let value = previous.format("%Y-%m-%d").to_string();
-            Ok((value.clone(), value.clone(), value))
-        }
-        "month" => {
-            let current = NaiveDate::parse_from_str(&format!("{period}-01"), "%Y-%m-%d")?;
-            let previous_year = current.year() - 1;
-            let month = current.month();
-            let start = NaiveDate::from_ymd_opt(previous_year, month, 1)
-                .ok_or_else(|| anyhow!("利润统计月份无效: {period}"))?;
-            let end = month_end(previous_year, month)?;
-            Ok((
-                start.format("%Y-%m").to_string(),
-                start.format("%Y-%m-%d").to_string(),
-                end.format("%Y-%m-%d").to_string(),
-            ))
-        }
-        "year" => {
-            let year = period
-                .parse::<i32>()
-                .with_context(|| format!("利润统计年份无效: {period}"))?
-                - 1;
-            Ok((
-                year.to_string(),
-                format!("{year}-01-01"),
-                format!("{year}-12-31"),
-            ))
-        }
-        _ => Err(anyhow!("不支持的利润统计周期: {period_type}")),
-    }
-}
-
-fn month_end(year: i32, month: u32) -> anyhow::Result<NaiveDate> {
-    let (next_year, next_month) = if month == 12 {
-        (year + 1, 1)
-    } else {
-        (year, month + 1)
-    };
-    let next_start = NaiveDate::from_ymd_opt(next_year, next_month, 1)
-        .ok_or_else(|| anyhow!("利润统计月份无效: {year}-{month:02}"))?;
-    Ok(next_start - Duration::days(1))
-}
-
-fn percent_change(current: f64, previous: f64) -> Option<f64> {
-    if previous.abs() < 0.0001 {
-        None
-    } else {
-        Some(money((current - previous) / previous * 100.0))
-    }
-}
-
-fn profit_analytics_category_breakdown(
-    conn: &Connection,
-    request: &ProfitAnalyticsRequest,
-    order_where: &str,
-) -> anyhow::Result<Vec<ProfitBreakdownDto>> {
-    let mut where_sql =
-        format!("{order_where} AND oi.category IS NOT NULL AND TRIM(oi.category) <> ''");
-    if let Some(category) = active_category(request.category.as_deref()) {
-        where_sql.push_str(&format!(" AND oi.category = '{}'", escape_sql(category)));
-    }
-    let sql = format!(
-        "SELECT
-           oi.category,
-           COUNT(DISTINCT o.id),
-           COALESCE(SUM(oi.amount), 0),
-           COALESCE(SUM(oi.amount), 0),
-           COALESCE(SUM(oi.cost_amount), 0),
-           COALESCE(SUM(oi.profit_amount), 0)
-         FROM order_items oi
-         JOIN orders o ON o.id = oi.order_id
-         WHERE {where_sql}
-         GROUP BY oi.category
-         ORDER BY COALESCE(SUM(oi.profit_amount), 0) DESC,
-                  COALESCE(SUM(oi.amount), 0) DESC,
-                  oi.category
-         LIMIT 20"
-    );
-    profit_breakdown_rows(conn, &sql)
-}
-
-fn profit_analytics_customer_breakdown(
-    conn: &Connection,
-    order_where: &str,
-) -> anyhow::Result<Vec<ProfitBreakdownDto>> {
-    let sql = format!(
-        "SELECT
-           o.customer_name,
-           COUNT(*),
-           COALESCE(SUM(o.product_sales_amount), 0),
-           COALESCE(SUM(o.customer_payable_amount), 0),
-           COALESCE(SUM(o.cost_amount), 0),
-           COALESCE(SUM(o.profit_amount), 0)
-         FROM orders o
-         WHERE {order_where}
-         GROUP BY o.customer_id, o.customer_name
-         ORDER BY COALESCE(SUM(o.profit_amount), 0) DESC,
-                  COALESCE(SUM(o.product_sales_amount), 0) DESC,
-                  o.customer_name
-         LIMIT 20"
-    );
-    profit_breakdown_rows(conn, &sql)
-}
-
-fn profit_breakdown_rows(conn: &Connection, sql: &str) -> anyhow::Result<Vec<ProfitBreakdownDto>> {
-    let mut stmt = conn.prepare(sql)?;
-    let rows = stmt
-        .query_map([], |row| {
-            Ok(ProfitBreakdownDto {
-                name: row.get(0)?,
-                order_count: row.get(1)?,
-                product_sales_amount: row.get(2)?,
-                customer_payable_amount: row.get(3)?,
-                cost_amount: row.get(4)?,
-                profit_amount: row.get(5)?,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(rows)
-}
-
 pub fn export_order_document(state: &AppState, order_id: i64) -> anyhow::Result<String> {
     let conn = state.connection()?;
-    let detail = crate::orders::get_order_detail(&conn, order_id)?;
+    let detail = crate::services::order_service::get_order_detail(&conn, order_id)?;
     let template = order_template_settings(&conn)?;
     let customer_folder = state
         .orders_dir()
@@ -461,7 +128,7 @@ pub fn export_order_document(state: &AppState, order_id: i64) -> anyhow::Result<
 
 pub fn export_order_pdf_document(state: &AppState, order_id: i64) -> anyhow::Result<String> {
     let conn = state.connection()?;
-    let detail = crate::orders::get_order_detail(&conn, order_id)?;
+    let detail = crate::services::order_service::get_order_detail(&conn, order_id)?;
     let template = order_template_settings(&conn)?;
     let customer_folder = state
         .orders_dir()
@@ -494,7 +161,7 @@ pub fn export_customer_statement_pdf_document(
     request: CustomerStatementRequest,
 ) -> anyhow::Result<String> {
     let conn = state.connection()?;
-    let statement = customer_statement(&conn, request)?;
+    let statement = customer_statement_service::customer_statement(&conn, request)?;
     std::fs::create_dir_all(state.exports_dir())?;
     let file_path = state.exports_dir().join(format!(
         "客户对账单_{}_{}_{}.pdf",
@@ -504,801 +171,6 @@ pub fn export_customer_statement_pdf_document(
     ));
     write_customer_statement_pdf(&file_path, &statement)?;
     Ok(file_path.to_string_lossy().to_string())
-}
-
-pub fn print_document(
-    conn: &Connection,
-    document_id: i64,
-    printer_name: Option<String>,
-) -> anyhow::Result<PrintStatusDto> {
-    let document = document_by_id(conn, document_id)?;
-    let message = open_or_print_file(&document.file_path, printer_name.as_deref())?;
-    conn.execute(
-        "UPDATE documents SET print_count = print_count + 1, printed_at = ?1 WHERE id = ?2",
-        params![now_text(), document_id],
-    )?;
-    conn.execute(
-        "UPDATE orders SET print_count = print_count + 1, updated_at = ?1 WHERE id = ?2",
-        params![now_text(), document.order_id],
-    )?;
-    Ok(PrintStatusDto {
-        file_path: document.file_path,
-        printer_name,
-        message,
-    })
-}
-
-pub fn open_document(conn: &Connection, document_id: i64) -> anyhow::Result<String> {
-    let document = document_by_id(conn, document_id)?;
-    open::that(&document.file_path).with_context(|| "无法打开单据文件，请检查文件是否存在")?;
-    Ok(document.file_path)
-}
-
-pub fn list_documents(
-    conn: &Connection,
-    filter: DocumentFilterRequest,
-) -> anyhow::Result<Vec<DocumentDto>> {
-    let mut sql = String::from(
-        "SELECT d.id, d.order_id, d.order_no, d.customer_id, d.customer_name, d.file_path,
-                d.file_type, d.printed_at, d.print_count, d.created_at, COALESCE(d.status, 'normal')
-         FROM documents d
-         JOIN orders o ON o.id = d.order_id
-         WHERE 1 = 1",
-    );
-    let mut conditions = Vec::new();
-    if let Some(customer_id) = filter.customer_id {
-        conditions.push(format!("d.customer_id = {customer_id}"));
-    }
-    if let Some(start_date) = filter.start_date {
-        conditions.push(format!("o.order_date >= '{}'", escape_sql(&start_date)));
-    }
-    if let Some(end_date) = filter.end_date {
-        conditions.push(format!("o.order_date <= '{}'", escape_sql(&end_date)));
-    }
-    if let Some(order_no) = filter.order_no {
-        conditions.push(format!("d.order_no LIKE '%{}%'", escape_sql(&order_no)));
-    }
-    if let Some(printed) = filter.printed {
-        if printed {
-            conditions.push("d.print_count > 0".to_string());
-        } else {
-            conditions.push("d.print_count = 0".to_string());
-        }
-    }
-    if let Some(status) = filter
-        .status
-        .filter(|value| !value.is_empty() && value != "全部")
-    {
-        conditions.push(format!(
-            "COALESCE(d.status, 'normal') = '{}'",
-            escape_sql(&status)
-        ));
-    }
-    for condition in conditions {
-        sql.push_str(" AND ");
-        sql.push_str(&condition);
-    }
-    sql.push_str(" ORDER BY d.created_at DESC LIMIT 500");
-
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map([], |row| {
-        Ok(DocumentDto {
-            id: row.get(0)?,
-            order_id: row.get(1)?,
-            order_no: row.get(2)?,
-            customer_id: row.get(3)?,
-            customer_name: row.get(4)?,
-            file_path: row.get(5)?,
-            file_type: row.get(6)?,
-            printed_at: row.get(7)?,
-            print_count: row.get(8)?,
-            created_at: row.get(9)?,
-            status: row.get(10)?,
-        })
-    })?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
-}
-
-pub fn list_profit_records(
-    conn: &Connection,
-    filter: ProfitFilterRequest,
-) -> anyhow::Result<Vec<crate::models::OrderDto>> {
-    let category = filter.category.clone();
-    let request = crate::models::ListOrdersRequest {
-        start_date: filter.start_date,
-        end_date: filter.end_date,
-        customer_id: filter.customer_id,
-        order_no: None,
-        status: Some("normal".to_string()),
-    };
-    let mut orders = crate::orders::list_orders(conn, request)?;
-    if let Some(category) = category.filter(|value| !value.is_empty() && value != "全部") {
-        let mut stmt = conn.prepare(
-            "SELECT COUNT(*) > 0 FROM order_items
-             WHERE order_id = ?1 AND category = ?2",
-        )?;
-        let mut filtered = Vec::new();
-        for order in orders {
-            let has_category: bool =
-                stmt.query_row(params![order.id, &category], |row| row.get(0))?;
-            if has_category {
-                filtered.push(order);
-            }
-        }
-        orders = filtered;
-    }
-    Ok(orders)
-}
-
-pub fn customer_statement(
-    conn: &Connection,
-    request: CustomerStatementRequest,
-) -> anyhow::Result<CustomerStatementDto> {
-    if request.customer_id <= 0 {
-        return Err(anyhow!("客户不合法"));
-    }
-    let start_date = normalize_date(&request.start_date);
-    let end_date = normalize_date(&request.end_date);
-    if start_date > end_date {
-        return Err(anyhow!("对账开始日期不能晚于结束日期"));
-    }
-    let customer_name: String = conn.query_row(
-        "SELECT name FROM customers WHERE id = ?1",
-        [request.customer_id],
-        |row| row.get(0),
-    )?;
-    let opening_payable: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(customer_payable_amount), 0)
-         FROM orders
-         WHERE customer_id = ?1 AND order_date < ?2 AND status = 'normal'",
-        params![request.customer_id, start_date],
-        |row| row.get(0),
-    )?;
-    let opening_paid: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(amount), 0)
-         FROM payment_records
-         WHERE customer_id = ?1 AND payment_date < ?2 AND status = 'normal'",
-        params![request.customer_id, start_date],
-        |row| row.get(0),
-    )?;
-    let opening_balance = money(opening_payable - opening_paid);
-    let period_discount_amount: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(direct_discount_amount + monthly_credit_used), 0)
-         FROM orders
-         WHERE customer_id = ?1 AND order_date >= ?2 AND order_date <= ?3 AND status = 'normal'",
-        params![request.customer_id, start_date, end_date],
-        |row| row.get(0),
-    )?;
-    let mut stmt = conn.prepare(
-        "SELECT record_date, record_type, record_no, description, debit_amount, credit_amount, remark
-         FROM (
-           SELECT order_date AS record_date,
-                  'order' AS record_type,
-                  order_no AS record_no,
-                  '出库单' AS description,
-                  customer_payable_amount AS debit_amount,
-                  0.0 AS credit_amount,
-                  remark AS remark,
-                  id * 2 AS sort_key
-           FROM orders
-           WHERE customer_id = ?1 AND order_date >= ?2 AND order_date <= ?3 AND status = 'normal'
-           UNION ALL
-           SELECT payment_date AS record_date,
-                  'payment' AS record_type,
-                  'PAY' || printf('%06d', id) AS record_no,
-                  COALESCE(method, '收款') AS description,
-                  0.0 AS debit_amount,
-                  amount AS credit_amount,
-                  remark AS remark,
-                  id * 2 + 1 AS sort_key
-           FROM payment_records
-           WHERE customer_id = ?1 AND payment_date >= ?2 AND payment_date <= ?3 AND status = 'normal'
-         )
-         ORDER BY record_date, sort_key",
-    )?;
-    let items = stmt
-        .query_map(params![request.customer_id, start_date, end_date], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, f64>(4)?,
-                row.get::<_, f64>(5)?,
-                row.get::<_, Option<String>>(6)?,
-            ))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut balance = opening_balance;
-    let mut period_payable = 0.0;
-    let mut period_paid = 0.0;
-    let rows = items
-        .into_iter()
-        .map(
-            |(record_date, record_type, record_no, description, debit, credit, remark)| {
-                period_payable = money(period_payable + debit);
-                period_paid = money(period_paid + credit);
-                balance = money(balance + debit - credit);
-                CustomerStatementRowDto {
-                    record_date,
-                    record_type,
-                    record_no,
-                    description,
-                    debit_amount: money(debit),
-                    credit_amount: money(credit),
-                    balance_after: balance,
-                    remark,
-                }
-            },
-        )
-        .collect::<Vec<_>>();
-
-    Ok(CustomerStatementDto {
-        summary: CustomerStatementSummaryDto {
-            customer_id: request.customer_id,
-            customer_name,
-            start_date,
-            end_date,
-            opening_balance,
-            period_payable,
-            period_paid,
-            period_discount_amount: money(period_discount_amount),
-            closing_balance: balance,
-        },
-        rows,
-    })
-}
-
-pub fn list_inventory_report(
-    conn: &Connection,
-    request: InventoryReportRequest,
-) -> anyhow::Result<Vec<InventoryReportRowDto>> {
-    let movement_where = movement_date_condition(&request);
-    let mut sql = format!(
-        "SELECT p.id, p.name, p.category, p.barcode,
-                COALESCE(inbound.inbound_quantity, 0),
-                COALESCE(inbound.inbound_amount, 0),
-                COALESCE(outbound.outbound_quantity, 0),
-                COALESCE(outbound.outbound_amount, 0),
-                COALESCE(gift.gift_quantity, 0),
-                COALESCE(s.current_stock, 0),
-                COALESCE(s.avg_cost, 0),
-                COALESCE(s.stock_value, 0)
-         FROM products p
-         LEFT JOIN stock_balances s ON s.product_id = p.id
-         LEFT JOIN (
-           SELECT product_id, SUM(quantity) AS inbound_quantity, SUM(amount) AS inbound_amount
-           FROM inventory_movements
-           WHERE movement_type = 'inbound' {movement_where}
-           GROUP BY product_id
-         ) inbound ON inbound.product_id = p.id
-         LEFT JOIN (
-           SELECT product_id, SUM(quantity) AS outbound_quantity, SUM(amount) AS outbound_amount
-           FROM inventory_movements
-           WHERE movement_type = 'outbound' {movement_where}
-           GROUP BY product_id
-         ) outbound ON outbound.product_id = p.id
-         LEFT JOIN (
-           SELECT product_id, SUM(quantity) AS gift_quantity
-           FROM inventory_movements
-           WHERE movement_type = 'gift_outbound' {movement_where}
-           GROUP BY product_id
-         ) gift ON gift.product_id = p.id
-         WHERE p.is_active = 1"
-    );
-    if let Some(category) = request
-        .category
-        .filter(|value| !value.is_empty() && value != "全部")
-    {
-        sql.push_str(&format!(" AND p.category = '{}'", escape_sql(&category)));
-    }
-    if let Some(keyword) = request.keyword.filter(|value| !value.is_empty()) {
-        let keyword = escape_sql(&keyword);
-        sql.push_str(&format!(
-            " AND (p.name LIKE '%{keyword}%' OR p.barcode LIKE '%{keyword}%')"
-        ));
-    }
-    sql.push_str(" ORDER BY p.category, p.name LIMIT 10000");
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map([], |row| {
-        Ok(InventoryReportRowDto {
-            product_id: row.get(0)?,
-            product_name: row.get(1)?,
-            category: row.get(2)?,
-            barcode: row.get(3)?,
-            inbound_quantity: row.get(4)?,
-            inbound_amount: row.get(5)?,
-            outbound_quantity: row.get(6)?,
-            outbound_amount: row.get(7)?,
-            gift_quantity: row.get(8)?,
-            current_stock: row.get(9)?,
-            avg_cost: row.get(10)?,
-            stock_value: row.get(11)?,
-        })
-    })?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
-}
-
-pub fn product_ranking(
-    conn: &Connection,
-    request: ProductRankingRequest,
-) -> anyhow::Result<Vec<ProductRankingRowDto>> {
-    let start_date = request
-        .start_date
-        .as_ref()
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| normalize_date(value));
-    let end_date = request
-        .end_date
-        .as_ref()
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| normalize_date(value));
-    if let (Some(start), Some(end)) = (&start_date, &end_date) {
-        if start > end {
-            return Err(anyhow!("商品经营排行开始日期不能晚于结束日期"));
-        }
-    }
-
-    let mut filters = vec![
-        "o.status = 'normal'".to_string(),
-        "oi.product_id IS NOT NULL".to_string(),
-        "oi.line_type IN ('normal', 'gift')".to_string(),
-    ];
-    if let Some(start) = &start_date {
-        filters.push(format!("o.order_date >= '{}'", escape_sql(start)));
-    }
-    if let Some(end) = &end_date {
-        filters.push(format!("o.order_date <= '{}'", escape_sql(end)));
-    }
-    if let Some(category) = active_category(request.category.as_deref()) {
-        filters.push(format!("oi.category = '{}'", escape_sql(category)));
-    }
-
-    let rank_expr = match request.rank_by.as_deref().unwrap_or("profit_amount") {
-        "sales_quantity" => "sales_quantity",
-        "sales_amount" => "sales_amount",
-        "profit_amount" => "profit_amount",
-        "gift_cost_amount" => "gift_cost_amount",
-        other => return Err(anyhow!("不支持的商品排行指标: {other}")),
-    };
-    let limit = request.limit.unwrap_or(20).clamp(1, 100);
-    let where_sql = filters.join(" AND ");
-    let sql = format!(
-        "SELECT
-            oi.product_id,
-            COALESCE(NULLIF(TRIM(oi.product_name), ''), '未命名商品') AS product_name,
-            COALESCE(NULLIF(TRIM(oi.category), ''), '未分类') AS category,
-            COUNT(DISTINCT CASE WHEN oi.line_type = 'normal' THEN o.id END) AS order_count,
-            COALESCE(SUM(CASE WHEN oi.line_type = 'normal' THEN oi.quantity ELSE 0 END), 0) AS sales_quantity,
-            COALESCE(SUM(CASE WHEN oi.line_type = 'normal' THEN oi.amount ELSE 0 END), 0) AS sales_amount,
-            COALESCE(SUM(CASE WHEN oi.line_type = 'normal' THEN oi.cost_amount ELSE 0 END), 0) AS cost_amount,
-            COALESCE(SUM(CASE WHEN oi.line_type IN ('normal', 'gift') THEN oi.profit_amount ELSE 0 END), 0) AS profit_amount,
-            COALESCE(SUM(CASE WHEN oi.line_type = 'gift' THEN oi.quantity ELSE 0 END), 0) AS gift_quantity,
-            COALESCE(SUM(CASE WHEN oi.line_type = 'gift' THEN oi.cost_amount ELSE 0 END), 0) AS gift_cost_amount
-         FROM order_items oi
-         JOIN orders o ON o.id = oi.order_id
-         WHERE {where_sql}
-         GROUP BY oi.product_id, product_name, category
-         ORDER BY {rank_expr} DESC, sales_amount DESC, product_name
-         LIMIT {limit}"
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map([], |row| {
-        Ok(ProductRankingRowDto {
-            product_id: row.get(0)?,
-            product_name: row.get(1)?,
-            category: row.get(2)?,
-            order_count: row.get(3)?,
-            sales_quantity: money(row.get::<_, f64>(4)?),
-            sales_amount: money(row.get::<_, f64>(5)?),
-            cost_amount: money(row.get::<_, f64>(6)?),
-            profit_amount: money(row.get::<_, f64>(7)?),
-            gift_quantity: money(row.get::<_, f64>(8)?),
-            gift_cost_amount: money(row.get::<_, f64>(9)?),
-        })
-    })?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
-}
-
-pub fn customer_analysis(
-    conn: &Connection,
-    request: CustomerAnalysisRequest,
-) -> anyhow::Result<CustomerAnalysisDto> {
-    let start_date = request
-        .start_date
-        .as_ref()
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| normalize_date(value));
-    let end_date = request
-        .end_date
-        .as_ref()
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| normalize_date(value));
-    if let (Some(start), Some(end)) = (&start_date, &end_date) {
-        if start > end {
-            return Err(anyhow!("客户经营分析开始日期不能晚于结束日期"));
-        }
-    }
-
-    let mut metric_filters = vec![
-        "o.status = 'normal'".to_string(),
-        "oi.product_id IS NOT NULL".to_string(),
-        "oi.line_type IN ('normal', 'gift')".to_string(),
-    ];
-    if let Some(start) = &start_date {
-        metric_filters.push(format!("o.order_date >= '{}'", escape_sql(start)));
-    }
-    if let Some(end) = &end_date {
-        metric_filters.push(format!("o.order_date <= '{}'", escape_sql(end)));
-    }
-    if let Some(category) = active_category(request.category.as_deref()) {
-        metric_filters.push(format!("oi.category = '{}'", escape_sql(category)));
-    }
-    let metric_where = metric_filters.join(" AND ");
-
-    let mut order_balance_filters = vec!["status = 'normal'".to_string()];
-    if let Some(end) = &end_date {
-        order_balance_filters.push(format!("order_date <= '{}'", escape_sql(end)));
-    }
-    let order_balance_where = order_balance_filters.join(" AND ");
-
-    let mut payment_balance_filters = vec!["status = 'normal'".to_string()];
-    if let Some(end) = &end_date {
-        payment_balance_filters.push(format!("payment_date <= '{}'", escape_sql(end)));
-    }
-    let payment_balance_where = payment_balance_filters.join(" AND ");
-
-    let rank_expr = match request.rank_by.as_deref().unwrap_or("profit_amount") {
-        "sales_amount" => "sales_amount",
-        "profit_amount" => "profit_amount",
-        "balance_amount" => "balance_amount",
-        other => return Err(anyhow!("不支持的客户分析排行指标: {other}")),
-    };
-    let limit = request.limit.unwrap_or(20).clamp(1, 100);
-    let sql = format!(
-        "SELECT
-            c.id,
-            c.name,
-            c.region,
-            COALESCE(m.order_count, 0) AS order_count,
-            COALESCE(m.sales_amount, 0) AS sales_amount,
-            COALESCE(m.cost_amount, 0) AS cost_amount,
-            COALESCE(m.profit_amount, 0) AS profit_amount,
-            COALESCE(b.payable_amount, 0) - COALESCE(p.paid_amount, 0) AS balance_amount,
-            m.recent_order_date
-         FROM customers c
-         LEFT JOIN (
-           SELECT
-             o.customer_id,
-             COUNT(DISTINCT o.id) AS order_count,
-             COALESCE(SUM(CASE WHEN oi.line_type = 'normal' THEN oi.amount ELSE 0 END), 0) AS sales_amount,
-             COALESCE(SUM(CASE WHEN oi.line_type = 'normal' THEN oi.cost_amount ELSE 0 END), 0) AS cost_amount,
-             COALESCE(SUM(CASE WHEN oi.line_type IN ('normal', 'gift') THEN oi.profit_amount ELSE 0 END), 0) AS profit_amount,
-             MAX(o.order_date) AS recent_order_date
-           FROM orders o
-           JOIN order_items oi ON oi.order_id = o.id
-           WHERE {metric_where}
-           GROUP BY o.customer_id
-         ) m ON m.customer_id = c.id
-         LEFT JOIN (
-           SELECT customer_id, COALESCE(SUM(customer_payable_amount), 0) AS payable_amount
-           FROM orders
-           WHERE {order_balance_where}
-           GROUP BY customer_id
-         ) b ON b.customer_id = c.id
-         LEFT JOIN (
-           SELECT customer_id, COALESCE(SUM(amount), 0) AS paid_amount
-           FROM payment_records
-           WHERE {payment_balance_where}
-           GROUP BY customer_id
-         ) p ON p.customer_id = c.id
-         WHERE c.is_active = 1
-           AND (
-             COALESCE(m.order_count, 0) > 0
-             OR ABS(COALESCE(b.payable_amount, 0) - COALESCE(p.paid_amount, 0)) > 0.0001
-           )
-         ORDER BY {rank_expr} DESC, sales_amount DESC, c.name
-         LIMIT {limit}"
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let mapped = stmt.query_map([], |row| {
-        Ok(CustomerAnalysisRowDto {
-            customer_id: row.get(0)?,
-            customer_name: row.get(1)?,
-            region: row.get(2)?,
-            order_count: row.get(3)?,
-            sales_amount: money(row.get::<_, f64>(4)?),
-            cost_amount: money(row.get::<_, f64>(5)?),
-            profit_amount: money(row.get::<_, f64>(6)?),
-            balance_amount: money(row.get::<_, f64>(7)?),
-            recent_order_date: row.get(8)?,
-            average_repurchase_days: None,
-            favorite_products: String::new(),
-        })
-    })?;
-    let mut rows = mapped.collect::<Result<Vec<_>, _>>()?;
-    for row in &mut rows {
-        row.average_repurchase_days = customer_average_repurchase_days(
-            conn,
-            row.customer_id,
-            start_date.as_deref(),
-            end_date.as_deref(),
-            request.category.as_deref(),
-        )?;
-        row.favorite_products = customer_favorite_products(
-            conn,
-            row.customer_id,
-            start_date.as_deref(),
-            end_date.as_deref(),
-            request.category.as_deref(),
-        )?;
-    }
-
-    Ok(CustomerAnalysisDto { rows })
-}
-
-fn customer_average_repurchase_days(
-    conn: &Connection,
-    customer_id: i64,
-    start_date: Option<&str>,
-    end_date: Option<&str>,
-    category: Option<&str>,
-) -> anyhow::Result<Option<f64>> {
-    let mut filters = vec![
-        format!("o.customer_id = {customer_id}"),
-        "o.status = 'normal'".to_string(),
-    ];
-    if let Some(start) = start_date {
-        filters.push(format!("o.order_date >= '{}'", escape_sql(start)));
-    }
-    if let Some(end) = end_date {
-        filters.push(format!("o.order_date <= '{}'", escape_sql(end)));
-    }
-    if let Some(category) = active_category(category) {
-        filters.push(format!(
-            "EXISTS (
-               SELECT 1 FROM order_items oi_filter
-               WHERE oi_filter.order_id = o.id AND oi_filter.category = '{}'
-             )",
-            escape_sql(category)
-        ));
-    }
-    let sql = format!(
-        "SELECT DISTINCT o.order_date
-         FROM orders o
-         WHERE {}
-         ORDER BY o.order_date",
-        filters.join(" AND ")
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let dates = stmt
-        .query_map([], |row| row.get::<_, String>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
-    if dates.len() < 2 {
-        return Ok(None);
-    }
-
-    let parsed = dates
-        .iter()
-        .map(|date| NaiveDate::parse_from_str(date, "%Y-%m-%d"))
-        .collect::<Result<Vec<_>, _>>()?;
-    let total_days = parsed
-        .windows(2)
-        .map(|window| (window[1] - window[0]).num_days())
-        .sum::<i64>();
-    Ok(Some(money(total_days as f64 / (parsed.len() - 1) as f64)))
-}
-
-fn customer_favorite_products(
-    conn: &Connection,
-    customer_id: i64,
-    start_date: Option<&str>,
-    end_date: Option<&str>,
-    category: Option<&str>,
-) -> anyhow::Result<String> {
-    let mut filters = vec![
-        format!("o.customer_id = {customer_id}"),
-        "o.status = 'normal'".to_string(),
-        "oi.line_type = 'normal'".to_string(),
-        "oi.product_id IS NOT NULL".to_string(),
-    ];
-    if let Some(start) = start_date {
-        filters.push(format!("o.order_date >= '{}'", escape_sql(start)));
-    }
-    if let Some(end) = end_date {
-        filters.push(format!("o.order_date <= '{}'", escape_sql(end)));
-    }
-    if let Some(category) = active_category(category) {
-        filters.push(format!("oi.category = '{}'", escape_sql(category)));
-    }
-    let sql = format!(
-        "SELECT
-            COALESCE(NULLIF(TRIM(oi.product_name), ''), '未命名商品') AS product_name,
-            COALESCE(SUM(oi.quantity), 0) AS quantity,
-            COALESCE(SUM(oi.amount), 0) AS sales_amount
-         FROM order_items oi
-         JOIN orders o ON o.id = oi.order_id
-         WHERE {}
-         GROUP BY oi.product_id, product_name
-         ORDER BY quantity DESC, sales_amount DESC, product_name
-         LIMIT 3",
-        filters.join(" AND ")
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let products = stmt
-        .query_map([], |row| {
-            let name = row.get::<_, String>(0)?;
-            let quantity = row.get::<_, f64>(1)?;
-            Ok(format!("{name}({})", compact_quantity(quantity)))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(products.join("、"))
-}
-
-fn compact_quantity(value: f64) -> String {
-    let rounded = money(value);
-    if (rounded.fract()).abs() < 0.0001 {
-        format!("{}", rounded as i64)
-    } else {
-        format!("{rounded:.2}")
-    }
-}
-
-pub fn supplier_purchase_ledger(
-    conn: &Connection,
-    request: SupplierPurchaseLedgerRequest,
-) -> anyhow::Result<SupplierPurchaseLedgerDto> {
-    let start_date = request
-        .start_date
-        .as_ref()
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| normalize_date(value));
-    let end_date = request
-        .end_date
-        .as_ref()
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| normalize_date(value));
-    if let (Some(start), Some(end)) = (&start_date, &end_date) {
-        if start > end {
-            return Err(anyhow!("采购台账开始日期不能晚于结束日期"));
-        }
-    }
-    let mut filters = Vec::new();
-    if let Some(start) = &start_date {
-        filters.push(format!("i.inbound_date >= '{}'", escape_sql(start)));
-    }
-    if let Some(end) = &end_date {
-        filters.push(format!("i.inbound_date <= '{}'", escape_sql(end)));
-    }
-    if let Some(supplier_id) = request.supplier_id {
-        filters.push(format!("i.supplier_id = {supplier_id}"));
-    }
-    let where_sql = if filters.is_empty() {
-        "1 = 1".to_string()
-    } else {
-        filters.join(" AND ")
-    };
-
-    let summary_sql = format!(
-        "SELECT i.supplier_id,
-                COALESCE(NULLIF(TRIM(i.supplier_name), ''), '未指定供应商') AS supplier_name,
-                COUNT(*) AS inbound_count,
-                COALESCE(SUM(i.amount), 0) AS inbound_amount,
-                MAX(i.inbound_date) AS recent_inbound_date
-         FROM inbound_records i
-         WHERE {where_sql}
-         GROUP BY i.supplier_id, supplier_name
-         ORDER BY inbound_amount DESC, supplier_name"
-    );
-    let mut summary_stmt = conn.prepare(&summary_sql)?;
-    let summaries = summary_stmt
-        .query_map([], |row| {
-            Ok(SupplierPurchaseSummaryDto {
-                supplier_id: row.get(0)?,
-                supplier_name: row.get(1)?,
-                inbound_count: row.get(2)?,
-                inbound_amount: money(row.get::<_, f64>(3)?),
-                recent_inbound_date: row.get(4)?,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let detail_sql = format!(
-        "SELECT i.id, i.inbound_date, i.product_id, p.name, p.category,
-                i.supplier_id, i.supplier_name, i.quantity, i.unit_cost, i.amount, i.remark
-         FROM inbound_records i
-         JOIN products p ON p.id = i.product_id
-         WHERE {where_sql}
-         ORDER BY i.inbound_date DESC, i.id DESC
-         LIMIT 1000"
-    );
-    let mut detail_stmt = conn.prepare(&detail_sql)?;
-    let details = detail_stmt
-        .query_map([], |row| {
-            Ok(InboundRecordDto {
-                id: row.get(0)?,
-                inbound_date: row.get(1)?,
-                product_id: row.get(2)?,
-                product_name: row.get(3)?,
-                category: row.get(4)?,
-                supplier_id: row.get(5)?,
-                supplier_name: row.get(6)?,
-                quantity: money(row.get::<_, f64>(7)?),
-                unit_cost: money(row.get::<_, f64>(8)?),
-                amount: money(row.get::<_, f64>(9)?),
-                remark: row.get(10)?,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let trend_sql = format!(
-        "SELECT substr(i.inbound_date, 1, 7) AS period,
-                COUNT(*) AS inbound_count,
-                COALESCE(SUM(i.amount), 0) AS inbound_amount
-         FROM inbound_records i
-         WHERE {where_sql}
-         GROUP BY period
-         ORDER BY period"
-    );
-    let mut trend_stmt = conn.prepare(&trend_sql)?;
-    let monthly_trend = trend_stmt
-        .query_map([], |row| {
-            Ok(SupplierPurchaseTrendPointDto {
-                period: row.get(0)?,
-                inbound_count: row.get(1)?,
-                inbound_amount: money(row.get::<_, f64>(2)?),
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-
-    Ok(SupplierPurchaseLedgerDto {
-        summaries,
-        details,
-        monthly_trend,
-    })
-}
-
-fn movement_date_condition(request: &InventoryReportRequest) -> String {
-    let mut conditions = String::new();
-    if let Some(start_date) = request
-        .start_date
-        .as_ref()
-        .filter(|value| !value.is_empty())
-    {
-        conditions.push_str(&format!(
-            " AND movement_date >= '{}'",
-            escape_sql(start_date)
-        ));
-    }
-    if let Some(end_date) = request.end_date.as_ref().filter(|value| !value.is_empty()) {
-        conditions.push_str(&format!(" AND movement_date <= '{}'", escape_sql(end_date)));
-    }
-    conditions
-}
-
-fn document_by_id(conn: &Connection, id: i64) -> anyhow::Result<DocumentDto> {
-    conn.query_row(
-        "SELECT id, order_id, order_no, customer_id, customer_name, file_path,
-                file_type, printed_at, print_count, created_at, COALESCE(status, 'normal')
-         FROM documents WHERE id = ?1",
-        [id],
-        |row| {
-            Ok(DocumentDto {
-                id: row.get(0)?,
-                order_id: row.get(1)?,
-                order_no: row.get(2)?,
-                customer_id: row.get(3)?,
-                customer_name: row.get(4)?,
-                file_path: row.get(5)?,
-                file_type: row.get(6)?,
-                printed_at: row.get(7)?,
-                print_count: row.get(8)?,
-                created_at: row.get(9)?,
-                status: row.get(10)?,
-            })
-        },
-    )
-    .map_err(Into::into)
 }
 
 pub fn export_data(state: &AppState, request: ExportDataRequest) -> anyhow::Result<String> {
@@ -1359,36 +231,6 @@ pub fn list_system_printers() -> anyhow::Result<Vec<String>> {
     Ok(Vec::new())
 }
 
-fn open_or_print_file(file_path: &str, printer_name: Option<&str>) -> anyhow::Result<String> {
-    if let Some(printer) = printer_name.filter(|value| !value.trim().is_empty()) {
-        if cfg!(target_os = "windows") {
-            let mut command = Command::new("powershell");
-            command.args([
-                "-NoProfile",
-                "-Command",
-                "Start-Process -FilePath $args[0] -Verb PrintTo -ArgumentList $args[1]",
-                file_path,
-                printer,
-            ]);
-            #[cfg(target_os = "windows")]
-            command.creation_flags(0x08000000);
-            let result = command.output();
-            if let Ok(output) = result {
-                if output.status.success() {
-                    return Ok(format!("已提交到打印机：{printer}"));
-                }
-            }
-        }
-        open::that(file_path).with_context(|| "无法打开单据文件，请检查文件是否存在")?;
-        return Ok(format!(
-            "无法直接提交到打印机：{printer}，已打开文件供手动打印"
-        ));
-    }
-
-    open::that(file_path).with_context(|| "无法打开单据文件，请检查文件是否存在")?;
-    Ok("已打开单据文件，请在关联程序中确认打印".to_string())
-}
-
 fn export_products(conn: &Connection, request: &ExportDataRequest) -> anyhow::Result<ExportTable> {
     let mut sql = String::from(
         "SELECT p.name, p.category, COALESCE(p.barcode, ''), COALESCE(p.unit, ''),
@@ -1398,19 +240,21 @@ fn export_products(conn: &Connection, request: &ExportDataRequest) -> anyhow::Re
          LEFT JOIN stock_balances s ON s.product_id = p.id
          WHERE 1 = 1",
     );
+    let mut sql_params: Vec<Value> = Vec::new();
     if let Some(category) = request.category.as_ref().filter(|value| !value.is_empty()) {
-        sql.push_str(&format!(" AND p.category = '{}'", escape_sql(category)));
+        sql.push_str(" AND p.category = ?");
+        sql_params.push(Value::Text(category.to_string()));
     }
     if let Some(keyword) = request.keyword.as_ref().filter(|value| !value.is_empty()) {
-        let keyword = escape_sql(keyword);
-        sql.push_str(&format!(
-            " AND (p.name LIKE '%{keyword}%' OR p.barcode LIKE '%{keyword}%')"
-        ));
+        let keyword = format!("%{keyword}%");
+        sql.push_str(" AND (p.name LIKE ? OR p.barcode LIKE ?)");
+        sql_params.push(Value::Text(keyword.clone()));
+        sql_params.push(Value::Text(keyword));
     }
     sql.push_str(" ORDER BY p.category, p.name");
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt
-        .query_map([], |row| {
+        .query_map(params_from_iter(sql_params.iter()), |row| {
             Ok(vec![
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
@@ -1453,16 +297,17 @@ fn export_customers(conn: &Connection, request: &ExportDataRequest) -> anyhow::R
         "SELECT COALESCE(region, ''), name, COALESCE(address, ''), COALESCE(phone, ''), is_active
          FROM customers WHERE 1 = 1",
     );
+    let mut sql_params: Vec<Value> = Vec::new();
     if let Some(keyword) = request.keyword.as_ref().filter(|value| !value.is_empty()) {
-        let keyword = escape_sql(keyword);
-        sql.push_str(&format!(
-            " AND (name LIKE '%{keyword}%' OR address LIKE '%{keyword}%')"
-        ));
+        let keyword = format!("%{keyword}%");
+        sql.push_str(" AND (name LIKE ? OR address LIKE ?)");
+        sql_params.push(Value::Text(keyword.clone()));
+        sql_params.push(Value::Text(keyword));
     }
     sql.push_str(" ORDER BY region, name");
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt
-        .query_map([], |row| {
+        .query_map(params_from_iter(sql_params.iter()), |row| {
             Ok(vec![
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
@@ -1491,14 +336,16 @@ fn export_inbounds(conn: &Connection, request: &ExportDataRequest) -> anyhow::Re
          JOIN products p ON p.id = i.product_id
          WHERE 1 = 1",
     );
-    append_date_filters(&mut sql, "i.inbound_date", request);
+    let mut sql_params: Vec<Value> = Vec::new();
+    append_date_filters(&mut sql, &mut sql_params, "i.inbound_date", request);
     if let Some(category) = request.category.as_ref().filter(|value| !value.is_empty()) {
-        sql.push_str(&format!(" AND p.category = '{}'", escape_sql(category)));
+        sql.push_str(" AND p.category = ?");
+        sql_params.push(Value::Text(category.to_string()));
     }
     sql.push_str(" ORDER BY i.inbound_date DESC, i.id DESC");
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt
-        .query_map([], |row| {
+        .query_map(params_from_iter(sql_params.iter()), |row| {
             Ok(vec![
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
@@ -1521,7 +368,7 @@ fn export_inventory_report(
     conn: &Connection,
     request: &ExportDataRequest,
 ) -> anyhow::Result<ExportTable> {
-    let rows = list_inventory_report(
+    let rows = crate::services::report_service::list_inventory_report(
         conn,
         InventoryReportRequest {
             start_date: request.start_date.clone(),
@@ -1570,7 +417,7 @@ fn export_product_ranking(
     conn: &Connection,
     request: &ExportDataRequest,
 ) -> anyhow::Result<ExportTable> {
-    let rows = product_ranking(
+    let rows = crate::services::analytics_service::product_ranking(
         conn,
         ProductRankingRequest {
             start_date: request.start_date.clone(),
@@ -1616,7 +463,7 @@ fn export_customer_analysis(
     conn: &Connection,
     request: &ExportDataRequest,
 ) -> anyhow::Result<ExportTable> {
-    let rows = customer_analysis(
+    let rows = crate::services::analytics_service::customer_analysis(
         conn,
         CustomerAnalysisRequest {
             start_date: request.start_date.clone(),
@@ -1680,7 +527,7 @@ fn export_customer_statement(
         .clone()
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| anyhow!("导出客户对账单必须选择结束日期"))?;
-    let statement = customer_statement(
+    let statement = customer_statement_service::customer_statement(
         conn,
         CustomerStatementRequest {
             customer_id,
@@ -1761,7 +608,7 @@ fn export_monthly_credits(
     conn: &Connection,
     request: &ExportDataRequest,
 ) -> anyhow::Result<ExportTable> {
-    let rows = crate::orders::list_monthly_credits(
+    let rows = crate::services::order_service::list_monthly_credits(
         conn,
         MonthlyCreditFilterRequest {
             customer_id: request.customer_id,
@@ -1807,7 +654,7 @@ fn export_monthly_credits(
 }
 
 fn export_profits(conn: &Connection, request: &ExportDataRequest) -> anyhow::Result<ExportTable> {
-    let rows = list_profit_records(
+    let rows = crate::services::profit_service::list_profit_records(
         conn,
         ProfitFilterRequest {
             start_date: request.start_date.clone(),
@@ -1848,16 +695,23 @@ fn export_profits(conn: &Connection, request: &ExportDataRequest) -> anyhow::Res
     ))
 }
 
-fn append_date_filters(sql: &mut String, column: &str, request: &ExportDataRequest) {
+fn append_date_filters(
+    sql: &mut String,
+    sql_params: &mut Vec<Value>,
+    column: &str,
+    request: &ExportDataRequest,
+) {
     if let Some(start) = request
         .start_date
         .as_ref()
         .filter(|value| !value.is_empty())
     {
-        sql.push_str(&format!(" AND {column} >= '{}'", escape_sql(start)));
+        sql.push_str(&format!(" AND {column} >= ?"));
+        sql_params.push(Value::Text(start.to_string()));
     }
     if let Some(end) = request.end_date.as_ref().filter(|value| !value.is_empty()) {
-        sql.push_str(&format!(" AND {column} <= '{}'", escape_sql(end)));
+        sql.push_str(&format!(" AND {column} <= ?"));
+        sql_params.push(Value::Text(end.to_string()));
     }
 }
 
@@ -2413,18 +1267,14 @@ fn column_name(mut column: u32) -> String {
     name
 }
 
-fn escape_sql(value: &str) -> String {
-    value.replace('\'', "''")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db;
     use crate::models::{
-        CustomerAnalysisRequest, CustomerStatementRequest, OrderDetailDto, OrderDto, OrderItemDto,
-        OrderTotalsDto, ProductRankingRequest, ProfitAnalyticsRequest,
-        SupplierPurchaseLedgerRequest,
+        CustomerAnalysisRequest, CustomerStatementRequest, CustomerStatementRowDto,
+        CustomerStatementSummaryDto, OrderDetailDto, OrderDto, OrderItemDto, OrderTotalsDto,
+        ProductRankingRequest, ProfitAnalyticsRequest, SupplierPurchaseLedgerRequest,
     };
     use std::time::{Duration, Instant};
 
@@ -2565,7 +1415,7 @@ mod tests {
         insert_profit_order(&conn, "20260601001", "饮料");
         insert_profit_order(&conn, "20260601002", "零食");
 
-        let rows = list_profit_records(
+        let rows = crate::services::profit_service::list_profit_records(
             &conn,
             ProfitFilterRequest {
                 start_date: Some("2026-06-01".to_string()),
@@ -2630,7 +1480,7 @@ mod tests {
             "voided",
         );
 
-        let daily = get_profit_analytics(
+        let daily = crate::services::profit_service::get_profit_analytics(
             &conn,
             ProfitAnalyticsRequest {
                 period: "day".to_string(),
@@ -2666,7 +1516,7 @@ mod tests {
         assert_eq!(daily.trend[1].profit_change_amount, Some(16.0));
         assert_eq!(daily.trend[1].profit_change_rate, Some(400.0));
 
-        let monthly = get_profit_analytics(
+        let monthly = crate::services::profit_service::get_profit_analytics(
             &conn,
             ProfitAnalyticsRequest {
                 period: "month".to_string(),
@@ -2687,7 +1537,7 @@ mod tests {
         assert_eq!(monthly.trend[0].profit_change_amount, Some(16.0));
         assert_eq!(monthly.trend[0].profit_change_rate, Some(200.0));
 
-        let yearly = get_profit_analytics(
+        let yearly = crate::services::profit_service::get_profit_analytics(
             &conn,
             ProfitAnalyticsRequest {
                 period: "year".to_string(),
@@ -2722,7 +1572,7 @@ mod tests {
             "normal",
         );
 
-        let analytics = get_profit_analytics(
+        let analytics = crate::services::profit_service::get_profit_analytics(
             &conn,
             ProfitAnalyticsRequest {
                 period: "day".to_string(),
@@ -2775,7 +1625,7 @@ mod tests {
             "normal",
         );
 
-        let analytics = get_profit_analytics(
+        let analytics = crate::services::profit_service::get_profit_analytics(
             &conn,
             ProfitAnalyticsRequest {
                 period: "day".to_string(),
@@ -2839,7 +1689,7 @@ mod tests {
         )
         .unwrap();
 
-        let sales = product_ranking(
+        let sales = crate::services::analytics_service::product_ranking(
             &conn,
             ProductRankingRequest {
                 start_date: Some("2026-06-01".to_string()),
@@ -2862,7 +1712,7 @@ mod tests {
         assert_eq!(sales[2].gift_cost_amount, 6.0);
         assert_eq!(sales[2].profit_amount, -6.0);
 
-        let gift_cost = product_ranking(
+        let gift_cost = crate::services::analytics_service::product_ranking(
             &conn,
             ProductRankingRequest {
                 start_date: Some("2026-06-01".to_string()),
@@ -2938,7 +1788,7 @@ mod tests {
         )
         .unwrap();
 
-        let sales = customer_analysis(
+        let sales = crate::services::analytics_service::customer_analysis(
             &conn,
             CustomerAnalysisRequest {
                 start_date: Some("2026-06-01".to_string()),
@@ -2963,7 +1813,7 @@ mod tests {
         assert_eq!(sales.rows[1].average_repurchase_days, Some(10.0));
         assert!(sales.rows[1].favorite_products.contains("可乐"));
 
-        let balance = customer_analysis(
+        let balance = crate::services::analytics_service::customer_analysis(
             &conn,
             CustomerAnalysisRequest {
                 start_date: Some("2026-06-01".to_string()),
@@ -3012,7 +1862,7 @@ mod tests {
         )
         .unwrap();
 
-        let statement = customer_statement(
+        let statement = crate::services::customer_statement_service::customer_statement(
             &conn,
             CustomerStatementRequest {
                 customer_id: 1,
@@ -3125,9 +1975,9 @@ mod tests {
         )
         .unwrap();
 
-        let rows = list_documents(
+        let rows = crate::services::document_service::list_documents(
             &conn,
-            DocumentFilterRequest {
+            crate::models::DocumentFilterRequest {
                 customer_id: Some(1),
                 start_date: Some("2026-06-01".to_string()),
                 end_date: Some("2026-06-30".to_string()),
@@ -3189,7 +2039,7 @@ mod tests {
         .unwrap();
         db::recalc_stock_balance(&conn, 1).unwrap();
 
-        let rows = list_inventory_report(
+        let rows = crate::services::report_service::list_inventory_report(
             &conn,
             InventoryReportRequest {
                 start_date: Some("2026-06-01".to_string()),
@@ -3240,7 +2090,7 @@ mod tests {
         )
         .unwrap();
 
-        let ledger = supplier_purchase_ledger(
+        let ledger = crate::services::report_service::supplier_purchase_ledger(
             &conn,
             SupplierPurchaseLedgerRequest {
                 start_date: Some("2026-01-01".to_string()),
@@ -3269,7 +2119,7 @@ mod tests {
         assert_eq!(ledger.monthly_trend[1].period, "2026-02");
         assert_eq!(ledger.monthly_trend[1].inbound_amount, 70.0);
 
-        let supplier_a = supplier_purchase_ledger(
+        let supplier_a = crate::services::report_service::supplier_purchase_ledger(
             &conn,
             SupplierPurchaseLedgerRequest {
                 start_date: Some("2026-01-01".to_string()),
@@ -3324,7 +2174,7 @@ mod tests {
         tx.commit().unwrap();
 
         let started = Instant::now();
-        let rows = list_inventory_report(
+        let rows = crate::services::report_service::list_inventory_report(
             &conn,
             InventoryReportRequest {
                 start_date: Some("2026-06-01".to_string()),

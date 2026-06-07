@@ -1,0 +1,16 @@
+pub mod analytics_repository;
+pub mod audit_repository;
+pub mod backup_repository;
+pub mod customer_account_repository;
+pub mod customer_repository;
+pub mod customer_rule_repository;
+pub mod customer_statement_repository;
+pub mod document_repository;
+pub mod inventory_control_repository;
+pub mod inventory_repository;
+pub mod order_repository;
+pub mod product_repository;
+pub mod profit_repository;
+pub mod report_repository;
+pub mod settings_repository;
+pub mod supplier_repository;
