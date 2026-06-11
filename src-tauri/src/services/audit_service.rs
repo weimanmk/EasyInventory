@@ -1,3 +1,4 @@
+use crate::logger;
 use crate::models::{AuditLogDto, AuditLogFilterRequest};
 use crate::repositories::audit_repository;
 use crate::utils::now_text;
@@ -15,6 +16,7 @@ pub struct AuditEvent<'a> {
 }
 
 pub fn record_audit(conn: &rusqlite::Connection, event: AuditEvent<'_>) -> anyhow::Result<()> {
+    let sanitized_details = event.details.map(logger::redact_sensitive_text);
     conn.execute(
         "INSERT INTO audit_logs
          (log_time, module, action, target_type, target_id, target_label, result, message, details)
@@ -28,7 +30,7 @@ pub fn record_audit(conn: &rusqlite::Connection, event: AuditEvent<'_>) -> anyho
             event.target_label,
             event.result,
             event.message,
-            event.details
+            sanitized_details.as_deref()
         ],
     )?;
     Ok(())

@@ -12,7 +12,13 @@ pub fn list_products(
 ) -> ApiResponse<Vec<ProductDto>> {
     let result = (|| {
         let conn = state.connection()?;
-        logger::info("product", format!("list_products filter={filter:?}"));
+        logger::info(
+            "product",
+            format!(
+                "list_products filter_keys={}",
+                product_filter_keys(filter.as_ref()).join(",")
+            ),
+        );
         product_service::list_products(&conn, filter)
     })();
     if let Ok(items) = &result {
@@ -26,7 +32,7 @@ pub fn list_products(
 
 #[tauri::command]
 pub fn create_product(state: State<AppState>, payload: ProductPayload) -> ApiResponse<ProductDto> {
-    logger::info("product", format!("create_product payload={payload:?}"));
+    logger::info("product", "create_product start");
     let result = (|| {
         let conn = state.connection()?;
         product_service::create_product(&conn, payload)
@@ -35,8 +41,8 @@ pub fn create_product(state: State<AppState>, payload: ProductPayload) -> ApiRes
         logger::info(
             "product",
             format!(
-                "create_product success id={} name={} category={} barcode={:?}",
-                product.id, product.name, product.category, product.barcode
+                "create_product success id={} category={}",
+                product.id, product.category
             ),
         );
     }
@@ -49,10 +55,7 @@ pub fn update_product(
     id: i64,
     payload: ProductPayload,
 ) -> ApiResponse<ProductDto> {
-    logger::info(
-        "product",
-        format!("update_product id={id} payload={payload:?}"),
-    );
+    logger::info("product", format!("update_product start id={id}"));
     let result = (|| {
         let conn = state.connection()?;
         product_service::update_product(&conn, id, payload)
@@ -61,8 +64,8 @@ pub fn update_product(
         logger::info(
             "product",
             format!(
-                "update_product success id={} name={} category={} barcode={:?}",
-                product.id, product.name, product.category, product.barcode
+                "update_product success id={} category={}",
+                product.id, product.category
             ),
         );
     }
@@ -109,7 +112,13 @@ pub fn list_customers(
 ) -> ApiResponse<Vec<CustomerDto>> {
     let result = (|| {
         let conn = state.connection()?;
-        logger::info("customer", format!("list_customers filter={filter:?}"));
+        logger::info(
+            "customer",
+            format!(
+                "list_customers filter_keys={}",
+                customer_filter_keys(filter.as_ref()).join(",")
+            ),
+        );
         customer_service::list_customers(&conn, filter)
     })();
     if let Ok(items) = &result {
@@ -126,7 +135,7 @@ pub fn create_customer(
     state: State<AppState>,
     payload: CustomerPayload,
 ) -> ApiResponse<CustomerDto> {
-    logger::info("customer", format!("create_customer payload={payload:?}"));
+    logger::info("customer", "create_customer start");
     let result = (|| {
         let conn = state.connection()?;
         customer_service::create_customer(&conn, payload)
@@ -135,8 +144,9 @@ pub fn create_customer(
         logger::info(
             "customer",
             format!(
-                "create_customer success id={} name={} region={:?}",
-                customer.id, customer.name, customer.region
+                "create_customer success id={} has_region={}",
+                customer.id,
+                customer.region.is_some()
             ),
         );
     }
@@ -149,10 +159,7 @@ pub fn update_customer(
     id: i64,
     payload: CustomerPayload,
 ) -> ApiResponse<CustomerDto> {
-    logger::info(
-        "customer",
-        format!("update_customer id={id} payload={payload:?}"),
-    );
+    logger::info("customer", format!("update_customer start id={id}"));
     let result = (|| {
         let conn = state.connection()?;
         customer_service::update_customer(&conn, id, payload)
@@ -161,8 +168,9 @@ pub fn update_customer(
         logger::info(
             "customer",
             format!(
-                "update_customer success id={} name={} region={:?}",
-                customer.id, customer.name, customer.region
+                "update_customer success id={} has_region={}",
+                customer.id,
+                customer.region.is_some()
             ),
         );
     }
@@ -246,4 +254,44 @@ pub fn batch_update_suppliers(
         supplier_service::batch_update_suppliers(&conn, payload)
     })();
     result.map(ok).unwrap_or_else(fail)
+}
+
+fn product_filter_keys(filter: Option<&ListProductsRequest>) -> Vec<&'static str> {
+    let Some(filter) = filter else {
+        return Vec::new();
+    };
+    let mut keys = Vec::new();
+    if filter.category.is_some() {
+        keys.push("category");
+    }
+    if filter.keyword.is_some() {
+        keys.push("keyword");
+    }
+    if filter.only_low_stock.is_some() {
+        keys.push("onlyLowStock");
+    }
+    if filter.only_in_stock.is_some() {
+        keys.push("onlyInStock");
+    }
+    if filter.is_active.is_some() {
+        keys.push("isActive");
+    }
+    keys
+}
+
+fn customer_filter_keys(filter: Option<&ListCustomersRequest>) -> Vec<&'static str> {
+    let Some(filter) = filter else {
+        return Vec::new();
+    };
+    let mut keys = Vec::new();
+    if filter.region.is_some() {
+        keys.push("region");
+    }
+    if filter.keyword.is_some() {
+        keys.push("keyword");
+    }
+    if filter.is_active.is_some() {
+        keys.push("isActive");
+    }
+    keys
 }

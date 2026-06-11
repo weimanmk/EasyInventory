@@ -1,3 +1,4 @@
+use crate::logger;
 use crate::models::{
     DataSelfCheckDto, DataSelfCheckIssueDto, DiagnosticPackageDto, DiagnosticSummaryDto,
 };
@@ -188,9 +189,13 @@ pub fn write_self_check_export(path: &Path, check: &DataSelfCheckDto) -> anyhow:
             issue.severity,
             issue.check_code,
             issue.target_type,
-            issue.target_label,
+            logger::redact_sensitive_text(&issue.target_label),
             issue.message,
-            issue.details.clone().unwrap_or_default()
+            issue
+                .details
+                .as_deref()
+                .map(logger::redact_sensitive_text)
+                .unwrap_or_default()
         ));
     }
     std::fs::write(path, text)?;
@@ -207,10 +212,10 @@ pub fn diagnostic_summary(
 ) -> anyhow::Result<DiagnosticSummaryDto> {
     Ok(DiagnosticSummaryDto {
         generated_at: now_text(),
-        database_path: database_path.to_string_lossy().to_string(),
-        logs_dir: logs_dir.to_string_lossy().to_string(),
-        backups_dir: backups_dir.to_string_lossy().to_string(),
-        exports_dir: exports_dir.to_string_lossy().to_string(),
+        database_path: path_hint(database_path),
+        logs_dir: path_hint(logs_dir),
+        backups_dir: path_hint(backups_dir),
+        exports_dir: path_hint(exports_dir),
         version: version.to_string(),
         database_size: std::fs::metadata(database_path)
             .map(|metadata| metadata.len() as i64)
@@ -274,7 +279,7 @@ pub fn export_diagnostic_package(
     })?;
     for row in settings {
         let (key, value) = row?;
-        text.push_str(&format!("{key}={value}\n"));
+        text.push_str(&format!("{key}={}\n", redact_setting_value(&key, &value)));
     }
     text.push_str("\n最近日志：\n");
     for line in &summary.latest_logs {
@@ -289,7 +294,7 @@ pub fn export_diagnostic_package(
     std::fs::write(&path, text)?;
     Ok(DiagnosticPackageDto {
         file_path: path.to_string_lossy().to_string(),
-        message: "诊断包已导出，包含日志、设置和基础统计，不包含客户明细".to_string(),
+        message: "诊断包已导出，日志、设置和路径信息已尽量脱敏".to_string(),
     })
 }
 
@@ -313,9 +318,76 @@ fn latest_log_lines(logs_dir: &Path, limit: usize) -> anyhow::Result<Vec<String>
         return Ok(Vec::new());
     };
     let content = std::fs::read_to_string(entry.path()).unwrap_or_default();
-    let mut lines = content.lines().map(ToString::to_string).collect::<Vec<_>>();
+    let mut lines = content
+        .lines()
+        .map(logger::redact_sensitive_text)
+        .collect::<Vec<_>>();
     if lines.len() > limit {
         lines = lines.split_off(lines.len() - limit);
     }
     Ok(lines)
+}
+
+fn path_hint(path: &Path) -> String {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| logger::final_path_component(&path.to_string_lossy()))
+}
+
+fn redact_setting_value(key: &str, value: &str) -> String {
+    let line = logger::redact_sensitive_text(&format!("{key}={value}"));
+    line.split_once('=')
+        .map(|(_, redacted)| redacted.to_string())
+        .unwrap_or_else(|| logger::redact_sensitive_text(value))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db;
+    use rusqlite::Connection;
+
+    #[test]
+    fn diagnostic_package_redacts_sensitive_settings_paths_and_logs() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("inventory.db");
+        let logs_dir = dir.path().join("logs");
+        let backups_dir = dir.path().join("backups");
+        let exports_dir = dir.path().join("exports");
+        std::fs::create_dir_all(&logs_dir).unwrap();
+        std::fs::create_dir_all(&backups_dir).unwrap();
+        std::fs::create_dir_all(&exports_dir).unwrap();
+
+        let conn = Connection::open(&db_path).unwrap();
+        db::init_schema(&conn).unwrap();
+        db::seed_settings(&conn).unwrap();
+        db::set_setting(&conn, "merchant_phone", "13800000000").unwrap();
+        db::set_setting(&conn, "merchant_address", "广东省深圳市南山区科技园").unwrap();
+        db::set_setting(&conn, "merchant_logo_path", "C:/Users/ww/Desktop/logo.png").unwrap();
+        std::fs::write(
+            logs_dir.join("easyinventory_20260611.log"),
+            "phone=13800000000 address=广东省深圳市南山区 filePath=C:/Users/ww/Desktop/orders/a.xlsx",
+        )
+        .unwrap();
+
+        let package = export_diagnostic_package(
+            &conn,
+            &db_path,
+            &logs_dir,
+            &backups_dir,
+            &exports_dir,
+            "1.3.2",
+        )
+        .unwrap();
+        let content = std::fs::read_to_string(package.file_path).unwrap();
+
+        assert!(content.contains("merchant_phone=138***00"));
+        assert!(content.contains("merchant_address=广东省深***"));
+        assert!(content.contains("merchant_logo_path=logo.png"));
+        assert!(content.contains("phone=138***00"));
+        assert!(!content.contains("13800000000"));
+        assert!(!content.contains("C:/Users/ww/Desktop"));
+    }
 }

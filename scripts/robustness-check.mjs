@@ -44,7 +44,7 @@ const checks = [
     name: '项目自动化测试入口完整',
     run() {
       requireAll('package.json', [
-        ['"version": "1.3.1"', '前端包版本为 V1.3.1'],
+        ['"version": "1.3.2"', '前端包版本为 V1.3.2'],
         ['"e2e:flows": "node scripts/e2e-flow-check.mjs"', '前端核心流程验收脚本'],
         ['"e2e:browser": "npm run build && node scripts/browser-e2e-check.mjs"', '浏览器级前端 E2E 脚本'],
         ['"package:smoke": "node scripts/package-smoke-check.mjs"', '安装包产物 smoke 检查脚本'],
@@ -90,8 +90,8 @@ const checks = [
         ['升级说明', '升级说明'],
         ['已知问题', '已知问题']
       ]);
-      requireAll('src-tauri/Cargo.toml', [['version = "1.3.1"', 'Rust 包版本为 V1.3.1']]);
-      requireAll('src-tauri/tauri.conf.json', [['"version": "1.3.1"', 'Tauri 打包版本为 V1.3.1']]);
+      requireAll('src-tauri/Cargo.toml', [['version = "1.3.2"', 'Rust 包版本为 V1.3.2']]);
+      requireAll('src-tauri/tauri.conf.json', [['"version": "1.3.2"', 'Tauri 打包版本为 V1.3.2']]);
     }
   },
   {
@@ -122,7 +122,7 @@ const checks = [
       requireAll('.github/pull_request_template.md', [['Verification', 'PR 模板包含验证清单']]);
       requireAll('README.md', [
         ['## 快速下载安装', 'README 提供下载说明'],
-        ['https://github.com/weimanmk/EasyInventory/releases/tag/v1.3.1', 'README 提供当前版本 Release 下载入口'],
+        ['https://github.com/weimanmk/EasyInventory/releases/tag/v1.3.2', 'README 提供当前版本 Release 下载入口'],
         ['## 10 分钟快速试用', 'README 提供快速试用路径'],
         ['## 数据安全边界', 'README 说明数据安全边界'],
         ['docs/images/outbound_page.png', 'README 展示快速出库截图'],
@@ -136,7 +136,12 @@ const checks = [
         ['CONTRIBUTING.md', 'README 链接贡献指南'],
         ['npm run release:manifest', 'README 说明 Release 清单命令'],
         ['docs/release-checklist.md', 'README 链接 Release checklist'],
-        ['EasyInventory_1.3.1_github_release_notes.md', 'README 说明 GitHub Release 正文文件']
+        ['EasyInventory_1.3.2_github_release_notes.md', 'README 说明 GitHub Release 正文文件'],
+        ['诊断包会对常见敏感字段做默认脱敏', 'README 说明诊断包默认脱敏']
+      ]);
+      requireAll('SECURITY.md', [
+        ['反馈问题前请脱敏', '安全说明提醒反馈前脱敏'],
+        ['EasyInventory v1.3.2', '安全说明覆盖当前版本']
       ]);
       requireAll('CONTRIBUTING.md', [
         ['npm run check', '贡献指南说明完整检查命令'],
@@ -344,8 +349,14 @@ const checks = [
       ]);
       requireAll('src/api/tauri.ts', [
         ['writeClientLog', '前端写日志工具'],
+        ['sanitizeLogDetails', '前端日志 details 脱敏'],
+        ['summarizeArgs', '前端日志参数摘要化'],
         ['命令返回失败', '记录 API 失败'],
         ['durationMs', '记录 API 耗时']
+      ]);
+      requireAll('src-tauri/src/logger.rs', [
+        ['redact_sensitive_text', '后端日志统一脱敏函数'],
+        ['redacts_common_sensitive_text', '后端日志脱敏测试']
       ]);
     }
   },
@@ -1667,7 +1678,15 @@ const checks = [
     name: '项目级功能单测覆盖完整',
     run() {
       requireAll('src-tauri/src/db.rs', [
-        ['recalc_stock_balance_uses_weighted_average_and_outbound_quantity', '库存余额和加权均价重算测试']
+        ['recalc_stock_balance_uses_weighted_average_and_outbound_quantity', '库存余额和加权均价重算测试'],
+        ['create_consistent_backup', 'SQLite 一致性备份函数'],
+        ['consistent_backup_includes_wal_committed_data', 'WAL 备份一致性测试'],
+        ['restore_database_file_creates_consistent_snapshot_in_wal_mode', 'WAL 恢复前快照测试']
+      ]);
+      requireAll('src-tauri/src/app.rs', [
+        ['db::open_database_connection', '运行时连接复用统一数据库连接配置'],
+        ['runtime_connection_uses_busy_timeout', '运行时连接 busy_timeout 测试'],
+        ['runtime_connections_handle_concurrent_writes', '运行时连接并发写入测试']
       ]);
       requireAll('src-tauri/src/orders.rs', [
         ['list_orders_filters_by_date_customer_and_status', '订单列表筛选测试'],

@@ -37,7 +37,7 @@ export function DiagnosticsCard({
         <Button onClick={onRefresh}>刷新诊断信息</Button>
       </Space>
       <Descriptions column={2} size="small">
-        <Descriptions.Item label="数据库">{diagnostic?.databasePath ?? appStatus?.databasePath}</Descriptions.Item>
+        <Descriptions.Item label="数据库">{diagnostic?.databasePath ?? finalPathComponent(appStatus?.databasePath)}</Descriptions.Item>
         <Descriptions.Item label="数据库大小">{diagnostic?.databaseSize ?? 0} B</Descriptions.Item>
         <Descriptions.Item label="版本">{diagnostic?.version ?? appStatus?.version}</Descriptions.Item>
         <Descriptions.Item label="备份数量">{diagnostic?.backupCount ?? backups.length}</Descriptions.Item>
@@ -79,4 +79,13 @@ export function DiagnosticsCard({
       </Card>
     </Card>
   );
+}
+
+function finalPathComponent(path?: string) {
+  if (!path) {
+    return undefined;
+  }
+  const normalized = path.replace(/\\/g, '/');
+  const parts = normalized.split('/').filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1] : path;
 }

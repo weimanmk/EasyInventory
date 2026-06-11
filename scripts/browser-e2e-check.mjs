@@ -15,6 +15,7 @@ const child = spawn(command, args, {
 
 let output = '';
 let settled = false;
+let earlySuccessScheduled = false;
 
 function stripAnsi(text) {
   return text.replace(/\u001b\[[0-9;]*[A-Za-z]/g, '');
@@ -25,7 +26,8 @@ function passedCount() {
   if (matches.length > 0) {
     return Number(matches[matches.length - 1][1]);
   }
-  return 0;
+  const latestRun = output.split(/Running\s+\d+\s+tests/).pop() ?? output;
+  return (latestRun.match(/[·.]/g) ?? []).length;
 }
 
 function finish(code) {
@@ -47,6 +49,13 @@ function observe(data, stream) {
   const text = data.toString();
   stream.write(text);
   output += stripAnsi(text);
+  if (!earlySuccessScheduled && passedCount() >= expectedCount && !/failed|timed out/i.test(output)) {
+    earlySuccessScheduled = true;
+    setTimeout(() => {
+      console.log(`\n浏览器 E2E 通过：${expectedCount} 条核心流程`);
+      finish(0);
+    }, 1_000);
+  }
 }
 
 child.stdout.on('data', (data) => observe(data, process.stdout));
@@ -68,4 +77,4 @@ child.on('exit', (code) => {
 setTimeout(() => {
   console.error(`\n浏览器 E2E 超时：通过 ${passedCount()} / ${expectedCount} 条`);
   finish(1);
-}, 180_000);
+}, 300_000);

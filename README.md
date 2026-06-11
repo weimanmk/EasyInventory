@@ -5,7 +5,7 @@
 <h1 align="center">EasyInventory</h1>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.3.1-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.3.2-blue">
   <img alt="License" src="https://img.shields.io/github/license/weimanmk/EasyInventory">
   <img alt="Rust" src="https://img.shields.io/badge/rust-1.85%2B-orange">
   <img alt="Tauri" src="https://img.shields.io/badge/tauri-2.x-24C8DB">
@@ -19,7 +19,7 @@
 
 EasyInventory 是一个轻量、本地化、开箱即用的 Windows 单机库存、计价、出库打单和经营分析软件，适合小型商贸、批发、配送、门店和档口经营场景。数据默认保存在本机 SQLite 数据库中，不依赖云服务，适合希望用简单工具替代复杂 Excel 工作簿的日常经营管理。
 
-当前版本：`1.3.1`
+当前版本：`1.3.2`
 
 ## 软件截图
 
@@ -109,8 +109,8 @@ EasyInventory 适合单店、单仓、小团队使用，尤其适合仍在用 Ex
 
 正式发布版本会在 GitHub Releases 页面提供 Windows 安装包：
 
-- 当前版本下载页：[EasyInventory v1.3.1](https://github.com/weimanmk/EasyInventory/releases/tag/v1.3.1)。
-- 下载 `EasyInventory_1.3.1_x64-setup.exe`。
+- 当前版本下载页：[EasyInventory v1.3.2](https://github.com/weimanmk/EasyInventory/releases/tag/v1.3.2)。
+- 下载 `EasyInventory_1.3.2_x64-setup.exe`。
 - 安装前建议核对 Release 页面提供的 SHA256 校验值。
 - 升级旧版本前，先在系统设置页执行一次手动备份。
 
@@ -125,9 +125,9 @@ npm run release:verify
 
 ```text
 src-tauri/target/release/easyinventory.exe
-src-tauri/target/release/bundle/nsis/EasyInventory_1.3.1_x64-setup.exe
-release/EasyInventory_1.3.1_release_manifest.md
-release/EasyInventory_1.3.1_github_release_notes.md
+src-tauri/target/release/bundle/nsis/EasyInventory_1.3.2_x64-setup.exe
+release/EasyInventory_1.3.2_release_manifest.md
+release/EasyInventory_1.3.2_github_release_notes.md
 ```
 
 ## 10 分钟快速试用
@@ -143,9 +143,9 @@ release/EasyInventory_1.3.1_github_release_notes.md
 
 ## 如何备份、恢复和迁移
 
-- 自动备份：软件启动时会按设置执行每日自动备份。
-- 手动备份：系统设置页可立即创建数据库备份。
-- 恢复备份：恢复前会先创建当前数据库快照，降低误操作风险。
+- 自动备份：软件启动时会按设置执行每日自动备份，备份会使用 SQLite 一致性备份路径。
+- 手动备份：系统设置页可立即创建数据库备份，备份完成后会进行基础完整性校验。
+- 恢复备份：恢复前会先创建当前数据库一致性快照，降低误操作风险。
 - 数据迁移：新用户优先使用“通用数据导入”；固定格式旧工作簿迁移位于高级历史兼容入口。
 - 升级建议：安装新版本前先手动备份数据库，并保留旧安装包一段时间。
 
@@ -153,7 +153,9 @@ release/EasyInventory_1.3.1_github_release_notes.md
 
 - 数据默认保存在本机应用数据目录，不上传云端。
 - 备份文件也保存在本机，用户需要自行决定是否复制到 U 盘、移动硬盘或私有网盘。
+- 日志和诊断包会对常见敏感字段做默认脱敏，但反馈问题前仍建议人工检查。
 - 诊断包用于排查问题，导出前请确认其中不包含不希望公开的信息。
+- 运行时 SQLite 连接会设置锁等待时间，减少短暂并发写入造成的失败。
 - 本项目不提供税务、审计、财务合规承诺；关键经营数据请按自己的业务要求额外备份。
 
 ## 开发环境

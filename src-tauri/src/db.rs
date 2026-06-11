@@ -2,12 +2,27 @@ use crate::app::AppState;
 use crate::models::*;
 use crate::utils::{money, now_text, today_text};
 use anyhow::{anyhow, Context};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, DatabaseName, OptionalExtension};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 pub const GUEST_CUSTOMER_NAME: &str = "散客";
 const GUEST_CUSTOMER_REGION: &str = "散客";
+const DEFAULT_BUSY_TIMEOUT: Duration = Duration::from_secs(10);
+
+pub fn open_database_connection(path: &Path) -> anyhow::Result<Connection> {
+    let conn = Connection::open(path)?;
+    configure_connection(&conn)?;
+    Ok(conn)
+}
+
+pub fn configure_connection(conn: &Connection) -> anyhow::Result<()> {
+    conn.busy_timeout(DEFAULT_BUSY_TIMEOUT)?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+    Ok(())
+}
 
 pub fn init_schema(conn: &Connection) -> anyhow::Result<()> {
     conn.execute_batch(
@@ -543,10 +558,47 @@ pub fn create_backup_file(state: &AppState, backup_type: &str) -> anyhow::Result
     }
     let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
     let backup_path = state.backups_dir().join(format!("inventory_{stamp}.db"));
-    fs::copy(&db_path, &backup_path).with_context(|| "复制数据库备份失败")?;
+    create_consistent_backup(&db_path, &backup_path).with_context(|| "创建一致性数据库备份失败")?;
+    validate_database_file(&backup_path).with_context(|| "备份完整性校验失败")?;
     let path_text = backup_path.to_string_lossy().to_string();
-    state.log_backup(&path_text, backup_type, "success", None)?;
+    state.log_backup(
+        &path_text,
+        backup_type,
+        "success",
+        Some("integrity_check=ok"),
+    )?;
     Ok(path_text)
+}
+
+pub fn create_consistent_backup(src_path: &Path, dst_path: &Path) -> anyhow::Result<()> {
+    if !src_path.exists() {
+        return Err(anyhow!("源数据库文件不存在"));
+    }
+    if let Some(parent) = dst_path.parent() {
+        fs::create_dir_all(parent).with_context(|| "创建备份目录失败")?;
+    }
+    remove_database_file_if_exists(dst_path)?;
+    remove_sqlite_sidecars(dst_path)?;
+
+    let src = open_database_connection(src_path)?;
+    src.backup(DatabaseName::Main, dst_path, None)
+        .with_context(|| "SQLite backup API 执行失败")?;
+    validate_database_file(dst_path)?;
+    Ok(())
+}
+
+pub fn validate_database_file(path: &Path) -> anyhow::Result<()> {
+    if !path.exists() {
+        return Err(anyhow!("数据库文件不存在"));
+    }
+    let conn = Connection::open(path).with_context(|| "打开数据库文件失败")?;
+    conn.busy_timeout(DEFAULT_BUSY_TIMEOUT)?;
+    let result: String = conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
+    if result.eq_ignore_ascii_case("ok") {
+        Ok(())
+    } else {
+        Err(anyhow!("数据库完整性检查失败：{result}"))
+    }
 }
 
 pub fn restore_database_file(
@@ -557,15 +609,26 @@ pub fn restore_database_file(
     if !backup_path.exists() {
         return Err(anyhow!("备份文件不存在"));
     }
+    validate_database_file(backup_path).with_context(|| "备份文件不可用")?;
     if let Some(parent) = snapshot_path.parent() {
         fs::create_dir_all(parent).with_context(|| "创建恢复前快照目录失败")?;
     }
     if db_path.exists() {
-        fs::copy(db_path, snapshot_path).with_context(|| "创建恢复前数据库快照失败")?;
+        create_consistent_backup(db_path, snapshot_path)
+            .with_context(|| "创建恢复前一致性快照失败")?;
     }
     remove_sqlite_sidecars(db_path)?;
     fs::copy(backup_path, db_path).with_context(|| "恢复数据库文件失败")?;
+    validate_database_file(db_path).with_context(|| "恢复后的数据库校验失败")?;
     remove_sqlite_sidecars(db_path)?;
+    Ok(())
+}
+
+fn remove_database_file_if_exists(path: &Path) -> anyhow::Result<()> {
+    if path.exists() {
+        fs::remove_file(path)
+            .with_context(|| format!("清理旧数据库文件失败：{}", path.to_string_lossy()))?;
+    }
     Ok(())
 }
 
@@ -832,6 +895,94 @@ mod tests {
         );
         assert_eq!(
             setting(&snapshot, "restore_marker").unwrap().as_deref(),
+            Some("current")
+        );
+    }
+
+    #[test]
+    fn consistent_backup_includes_wal_committed_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("inventory.db");
+        let backup_path = dir.path().join("backup.db");
+
+        let conn = open_database_connection(&db_path).unwrap();
+        init_schema(&conn).unwrap();
+        set_setting(&conn, "wal_marker", "latest").unwrap();
+        let journal_mode: String = conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
+
+        create_consistent_backup(&db_path, &backup_path).unwrap();
+
+        let backup = Connection::open(&backup_path).unwrap();
+        assert_eq!(
+            setting(&backup, "wal_marker").unwrap().as_deref(),
+            Some("latest")
+        );
+        validate_database_file(&backup_path).unwrap();
+    }
+
+    #[test]
+    fn restore_database_file_creates_consistent_snapshot_in_wal_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("inventory.db");
+        let backup_path = dir.path().join("backup.db");
+        let snapshot_path = dir.path().join("pre_restore.db");
+
+        let conn = open_database_connection(&db_path).unwrap();
+        init_schema(&conn).unwrap();
+        set_setting(&conn, "restore_marker", "current-wal").unwrap();
+        drop(conn);
+
+        let backup = open_database_connection(&backup_path).unwrap();
+        init_schema(&backup).unwrap();
+        set_setting(&backup, "restore_marker", "backup").unwrap();
+        drop(backup);
+
+        restore_database_file(&db_path, &backup_path, &snapshot_path).unwrap();
+
+        assert!(!sqlite_sidecar_paths(&db_path)
+            .iter()
+            .any(|path| path.exists()));
+        let restored = Connection::open(&db_path).unwrap();
+        let snapshot = Connection::open(&snapshot_path).unwrap();
+        assert_eq!(
+            setting(&restored, "restore_marker").unwrap().as_deref(),
+            Some("backup")
+        );
+        assert_eq!(
+            setting(&snapshot, "restore_marker").unwrap().as_deref(),
+            Some("current-wal")
+        );
+        validate_database_file(&snapshot_path).unwrap();
+    }
+
+    #[test]
+    fn restore_database_file_aborts_when_snapshot_cannot_be_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("inventory.db");
+        let backup_path = dir.path().join("backup.db");
+        let snapshot_path = dir.path().join("missing").join("pre_restore.db");
+
+        let conn = open_database_connection(&db_path).unwrap();
+        init_schema(&conn).unwrap();
+        set_setting(&conn, "restore_marker", "current").unwrap();
+        drop(conn);
+
+        let backup = open_database_connection(&backup_path).unwrap();
+        init_schema(&backup).unwrap();
+        set_setting(&backup, "restore_marker", "backup").unwrap();
+        drop(backup);
+
+        fs::create_dir_all(&snapshot_path).unwrap();
+
+        let result = restore_database_file(&db_path, &backup_path, &snapshot_path);
+
+        assert!(result.is_err());
+        let current = Connection::open(&db_path).unwrap();
+        assert_eq!(
+            setting(&current, "restore_marker").unwrap().as_deref(),
             Some("current")
         );
     }

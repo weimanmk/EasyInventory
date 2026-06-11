@@ -79,10 +79,7 @@ impl AppState {
     }
 
     pub fn connection(&self) -> anyhow::Result<Connection> {
-        let conn = Connection::open(&self.inner.db_path)?;
-        conn.pragma_update(None, "foreign_keys", "ON")?;
-        conn.pragma_update(None, "journal_mode", "WAL")?;
-        Ok(conn)
+        db::open_database_connection(&self.inner.db_path)
     }
 
     pub fn db_path(&self) -> PathBuf {
@@ -150,5 +147,108 @@ impl AppState {
         )?;
         logger::info("backup", format!("{backup_type} {status}: {backup_path}"));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+impl AppState {
+    pub fn new_for_test(base: PathBuf) -> Self {
+        let data_dir = base.join("data");
+        let backups_dir = base.join("backups");
+        let orders_dir = base.join("orders");
+        let exports_dir = base.join("exports");
+        let logs_dir = base.join("logs");
+        let config_dir = base.join("config");
+        let db_path = data_dir.join("inventory.db");
+
+        Self {
+            inner: Arc::new(StateInner {
+                app_dir: base,
+                data_dir,
+                backups_dir,
+                orders_dir,
+                exports_dir,
+                logs_dir,
+                config_dir,
+                db_path,
+                import_result: Mutex::new(None),
+            }),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::CreateInboundRequest;
+    use crate::services::inventory_service;
+    use std::sync::{Arc, Barrier};
+
+    fn ready_test_state() -> AppState {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::new_for_test(dir.keep());
+        state.ensure_ready().unwrap();
+        state
+    }
+
+    #[test]
+    fn runtime_connection_uses_busy_timeout() {
+        let state = ready_test_state();
+        let conn = state.connection().unwrap();
+        let busy_timeout_ms: i64 = conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .unwrap();
+
+        assert_eq!(busy_timeout_ms, 10_000);
+    }
+
+    #[test]
+    fn runtime_connections_handle_concurrent_writes() {
+        let state = ready_test_state();
+        let conn = state.connection().unwrap();
+        let now = now_text();
+        conn.execute(
+            "INSERT INTO products (name, category, default_price, safety_stock, is_active, created_at, updated_at)
+             VALUES ('运行时并发商品', '压力', 10, 0, 1, ?1, ?1)",
+            [&now],
+        )
+        .unwrap();
+        drop(conn);
+
+        let worker_count = 8;
+        let barrier = Arc::new(Barrier::new(worker_count));
+        let handles = (0..worker_count)
+            .map(|_| {
+                let state = state.clone();
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    let mut conn = state.connection().unwrap();
+                    barrier.wait();
+                    inventory_service::create_inbound(
+                        &mut conn,
+                        CreateInboundRequest {
+                            inbound_date: "2026-06-01".to_string(),
+                            product_id: 1,
+                            supplier_id: None,
+                            quantity: 1.0,
+                            unit_cost: 5.0,
+                            remark: None,
+                        },
+                    )
+                    .unwrap();
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let conn = state.connection().unwrap();
+        let inbound_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM inbound_records", [], |row| row.get(0))
+            .unwrap();
+
+        assert_eq!(inbound_count, worker_count as i64);
     }
 }

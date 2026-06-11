@@ -432,21 +432,35 @@ export default function SettingsPage() {
   }
 
   async function exportSelfCheck() {
-    try {
-      const path = await api.exportDataSelfCheck();
-      message.success(`自检结果已导出：${path}`);
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : '导出自检结果失败');
-    }
+    modal.confirm({
+      title: '导出自检结果前请确认隐私边界',
+      content: '自检结果可能包含订单号、单据文件名和异常摘要。导出前系统会尽量脱敏，但提交给他人前仍建议检查内容。',
+      okText: '导出',
+      onOk: async () => {
+        try {
+          const path = await api.exportDataSelfCheck();
+          message.success(`自检结果已导出：${finalPathComponent(path)}`);
+        } catch (error) {
+          message.error(error instanceof Error ? error.message : '导出自检结果失败');
+        }
+      }
+    });
   }
 
   async function exportDiagnosticPackage() {
-    try {
-      const result = await api.exportDiagnosticPackage();
-      message.success(`${result.message}：${result.filePath}`);
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : '导出诊断包失败');
-    }
+    modal.confirm({
+      title: '导出诊断包前请确认隐私边界',
+      content: '诊断包可能包含运行日志和本机路径信息。导出前系统会尽量脱敏，但提交给他人前仍建议检查内容，避免包含客户、电话、地址、真实订单或库存金额。',
+      okText: '导出',
+      onOk: async () => {
+        try {
+          const result = await api.exportDiagnosticPackage();
+          message.success(`${result.message}：${finalPathComponent(result.filePath)}`);
+        } catch (error) {
+          message.error(error instanceof Error ? error.message : '导出诊断包失败');
+        }
+      }
+    });
   }
 
   useEffect(() => {
@@ -779,4 +793,10 @@ function mergeFieldMapping(
   );
   const merged = { ...cleanedVisual, ...fromText };
   return Object.keys(merged).length > 0 ? merged : undefined;
+}
+
+function finalPathComponent(path: string) {
+  const normalized = path.replace(/\\/g, '/');
+  const parts = normalized.split('/').filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1] : path;
 }

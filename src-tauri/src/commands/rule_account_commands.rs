@@ -17,7 +17,10 @@ pub fn list_customer_product_rules(
         let conn = state.connection()?;
         logger::info(
             "rule",
-            format!("list_customer_product_rules filter={filter:?}"),
+            format!(
+                "list_customer_product_rules filter_keys={}",
+                rule_filter_keys(filter.as_ref()).join(",")
+            ),
         );
         customer_rule_service::list_customer_product_rules(&conn, filter)
     })();
@@ -37,7 +40,12 @@ pub fn save_customer_product_rule(
 ) -> ApiResponse<i64> {
     logger::info(
         "rule",
-        format!("save_customer_product_rule payload={payload:?}"),
+        format!(
+            "save_customer_product_rule start has_id={} has_gift={} has_credit={}",
+            payload.id.is_some(),
+            payload.gift_product_id.is_some(),
+            payload.monthly_credit_amount.is_some()
+        ),
     );
     let result = (|| {
         let conn = state.connection()?;
@@ -205,4 +213,30 @@ pub fn export_customer_statement_pdf(
     reports::export_customer_statement_pdf_document(&state, request)
         .map(ok)
         .unwrap_or_else(fail)
+}
+
+fn rule_filter_keys(filter: Option<&RuleFilterRequest>) -> Vec<&'static str> {
+    let Some(filter) = filter else {
+        return Vec::new();
+    };
+    let mut keys = Vec::new();
+    if filter.customer_id.is_some() {
+        keys.push("customerId");
+    }
+    if filter.product_id.is_some() {
+        keys.push("productId");
+    }
+    if filter.category.is_some() {
+        keys.push("category");
+    }
+    if filter.keyword.is_some() {
+        keys.push("keyword");
+    }
+    if filter.is_active.is_some() {
+        keys.push("isActive");
+    }
+    if filter.rule_type.is_some() {
+        keys.push("ruleType");
+    }
+    keys
 }

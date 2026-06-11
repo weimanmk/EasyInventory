@@ -37,6 +37,9 @@ npm run release:verify
 - 升级前请在系统设置页执行一次手动备份。
 - 建议保留旧安装包一段时间，确认新版本运行稳定后再清理。
 - 数据库保存在本机应用数据目录，安装新版本不会自动上传或迁移到云端。
+- v1.3.2 会默认摘要化运行日志，并对常见电话、地址、路径和名称字段做脱敏。
+- v1.3.2 的自动备份、手动备份和恢复前快照使用 SQLite 一致性备份路径。
+- v1.3.2 为运行时 SQLite 连接设置锁等待，短暂写锁竞争会先等待再返回错误。
 
 ### 已知问题
 
@@ -47,6 +50,7 @@ npm run release:verify
 ### 验证
 
 - npm run check
+- npm run tauri:build
 - npm run package:smoke
 - npm run release:manifest
 ```
@@ -56,3 +60,4 @@ npm run release:verify
 - GitHub Release 页面包含安装包、便携 EXE、版本说明和 SHA256。
 - README 下载说明链接到 Releases 页面。
 - 新版本启动后可完成初始化、入库、出库、单据导出和备份。
+- 导出诊断包前会展示隐私提示，导出的日志和设置已尽量脱敏。
