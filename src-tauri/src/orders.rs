@@ -226,13 +226,14 @@ mod tests {
             [&now],
         )
         .unwrap();
+        let available_month = crate::utils::next_month(&now);
         conn.execute(
             "INSERT INTO monthly_credits
              (source_order_id, source_order_no, customer_id, category, amount, used_amount, remaining_amount,
               generated_date, available_month, status, created_at, updated_at)
              VALUES
-             (1, 'SAFE-001', 1, '特殊''类别', 30, 0, 30, '2026-06-01', '2026-07', 'pending', ?1, ?1)",
-            [&now],
+             (1, 'SAFE-001', 1, '特殊''类别', 30, 0, 30, '2026-06-01', ?2, 'pending', ?1, ?1)",
+            params![&now, &available_month],
         )
         .unwrap();
 
@@ -278,7 +279,7 @@ mod tests {
                 status: Some("pending".to_string()),
                 start_date: None,
                 end_date: None,
-                available_month: Some("2026-07".to_string()),
+                available_month: Some(available_month),
             },
         )
         .unwrap();

@@ -12,9 +12,15 @@ use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
 use umya_spreadsheet::{
-    self, writer::xlsx, Border, HorizontalAlignmentValues, OrientationValues, Style,
-    VerticalAlignmentValues,
+    self, writer::xlsx, Border, Coordinate, HorizontalAlignmentValues, OrientationValues,
+    Selection, SheetView, SheetViews, Style, VerticalAlignmentValues,
 };
+
+const ORDER_TEMPLATE_LAST_COLUMN: u32 = 11;
+const ORDER_TEMPLATE_LAST_ROW: u32 = 21;
+const ORDER_TEMPLATE_DETAIL_FIRST_ROW: u32 = 6;
+const ORDER_TEMPLATE_DETAIL_LAST_ROW: u32 = 20;
+const ORDER_TEMPLATE_TOTAL_ROW: u32 = 21;
 
 type ExportRows = Vec<Vec<String>>;
 type ExportTable = (&'static str, Vec<&'static str>, ExportRows);
@@ -768,32 +774,15 @@ fn apply_order_template_layout(
     sheet: &mut umya_spreadsheet::Worksheet,
     template: &OrderTemplateSettings,
 ) {
-    for (column, width) in [
-        ("A", 9.0),
-        ("B", 13.0),
-        ("C", 12.082_031_25),
-        ("D", 14.25),
-        ("E", 8.832_031_25),
-        ("F", 8.75),
-        ("G", 10.332_031_25),
-        ("H", 10.0),
-        ("I", 9.0),
-        ("J", 13.0),
-    ] {
-        sheet.get_column_dimension_mut(column).set_width(width);
+    sheet.set_active_cell("A1");
+    set_order_template_view(sheet);
+    for column in 1..=ORDER_TEMPLATE_LAST_COLUMN {
+        sheet
+            .get_column_dimension_mut(&column_name(column))
+            .set_width(13.0);
     }
 
-    for row in 42..=64 {
-        sheet.get_row_dimension_mut(&row).set_height(15.0);
-    }
-
-    for range in [
-        "A42:J44", "B46:C46", "E45:F45", "G45:H45", "I45:J45", "I46:J46", "B47:C47", "I47:J47",
-        "B48:C48", "I48:J48", "B49:C49", "I49:J49", "B50:C50", "I50:J50", "B51:C51", "I51:J51",
-        "B52:C52", "I52:J52", "B53:C53", "I53:J53", "B54:C54", "I54:J54", "B55:C55", "I55:J55",
-        "B56:C56", "I56:J56", "B57:C57", "I57:J57", "B58:C58", "I58:J58", "B59:C59", "I59:J59",
-        "B60:C60", "I60:J60", "B61:C61", "I61:J61", "A62:B62", "C62:E62", "G62:H62", "I62:J62",
-    ] {
+    for range in order_template_merge_ranges() {
         sheet.add_merge_cells(range);
     }
 
@@ -804,7 +793,11 @@ fn apply_order_template_layout(
         } else {
             OrientationValues::Portrait
         })
-        .set_paper_size(128);
+        .set_paper_size(9)
+        .set_fit_to_width(1)
+        .set_fit_to_height(1)
+        .set_horizontal_dpi(300)
+        .set_vertical_dpi(300);
     sheet
         .get_page_margins_mut()
         .set_left(template.margin)
@@ -813,10 +806,10 @@ fn apply_order_template_layout(
         .set_bottom(template.margin)
         .set_header(0.0)
         .set_footer(0.0);
-    let _ = sheet.add_defined_name("_xlnm.Print_Area", "'单据'!$A$42:$J$64");
+    let _ = sheet.add_defined_name("_xlnm.Print_Area", "'单据'!$A$1:$K$21");
 
-    for row in 42..=64 {
-        for column in 1..=10 {
+    for row in 1..=ORDER_TEMPLATE_LAST_ROW {
+        for column in 1..=ORDER_TEMPLATE_LAST_COLUMN {
             let address = cell_address(column, row);
             sheet.set_style(address, template_cell_style(column, row));
         }
@@ -828,35 +821,34 @@ fn write_order_template_values(
     detail: &crate::models::OrderDetailDto,
     template: &OrderTemplateSettings,
 ) {
-    sheet.get_cell_mut("A42").set_value(&template.store_name);
-    sheet.get_cell_mut("A45").set_value("客户:");
+    sheet.get_cell_mut("A1").set_value(&template.store_name);
+    sheet.get_cell_mut("A4").set_value("客户:");
     sheet
-        .get_cell_mut("B45")
+        .get_cell_mut("B4")
         .set_value(&detail.order.customer_name);
-    sheet.get_cell_mut("D45").set_value("地址：");
+    sheet.get_cell_mut("D4").set_value("地址：");
     sheet
-        .get_cell_mut("E45")
+        .get_cell_mut("E4")
         .set_value(detail.order.customer_address.clone().unwrap_or_default());
-    sheet.get_cell_mut("G45").set_value(&detail.order.order_no);
-    sheet
-        .get_cell_mut("I45")
-        .set_value(&detail.order.order_date);
+    sheet.get_cell_mut("G4").set_value(&detail.order.order_no);
+    sheet.get_cell_mut("I4").set_value(&detail.order.order_date);
 
     for (address, value) in [
-        ("A46", "序号"),
-        ("B46", if template.show_barcode { "条码" } else { "" }),
-        ("D46", template.product_label.as_str()),
-        ("E46", "单位"),
-        ("F46", template.quantity_label.as_str()),
-        ("G46", template.price_label.as_str()),
-        ("H46", template.amount_label.as_str()),
-        ("I46", template.remark_label.as_str()),
+        ("A5", "序号"),
+        ("B5", if template.show_barcode { "条码" } else { "" }),
+        ("D5", template.product_label.as_str()),
+        ("E5", "单位"),
+        ("F5", template.quantity_label.as_str()),
+        ("G5", template.price_label.as_str()),
+        ("H5", template.amount_label.as_str()),
+        ("I5", template.remark_label.as_str()),
     ] {
         sheet.get_cell_mut(address).set_value(value);
     }
 
-    for (index, item) in detail.items.iter().take(15).enumerate() {
-        let row = 47 + index as u32;
+    let max_items = (ORDER_TEMPLATE_DETAIL_LAST_ROW - ORDER_TEMPLATE_DETAIL_FIRST_ROW + 1) as usize;
+    for (index, item) in detail.items.iter().take(max_items).enumerate() {
+        let row = ORDER_TEMPLATE_DETAIL_FIRST_ROW + index as u32;
         sheet
             .get_cell_mut(format!("A{row}"))
             .set_value_number((index + 1) as f64);
@@ -890,22 +882,28 @@ fn write_order_template_values(
     let quantity_total = detail
         .items
         .iter()
-        .take(15)
+        .take(max_items)
         .map(|item| item.quantity)
         .sum::<f64>();
     let amount_total = detail
         .items
         .iter()
-        .take(15)
+        .take(max_items)
         .map(|item| item.amount)
         .sum::<f64>();
 
-    sheet.get_cell_mut("A62").set_value("总金额");
     sheet
-        .get_cell_mut("C62")
+        .get_cell_mut(format!("A{ORDER_TEMPLATE_TOTAL_ROW}"))
+        .set_value("总金额");
+    sheet
+        .get_cell_mut(format!("C{ORDER_TEMPLATE_TOTAL_ROW}"))
         .set_value_number(money(detail.order.totals.customer_payable_amount));
-    sheet.get_cell_mut("F62").set_value_number(quantity_total);
-    sheet.get_cell_mut("G62").set_value_number(amount_total);
+    sheet
+        .get_cell_mut(format!("F{ORDER_TEMPLATE_TOTAL_ROW}"))
+        .set_value_number(quantity_total);
+    sheet
+        .get_cell_mut(format!("G{ORDER_TEMPLATE_TOTAL_ROW}"))
+        .set_value_number(amount_total);
 
     if let Some(remark) = detail
         .order
@@ -913,7 +911,9 @@ fn write_order_template_values(
         .as_ref()
         .or(template.footer_text.as_ref())
     {
-        sheet.get_cell_mut("A64").set_value(remark);
+        sheet
+            .get_cell_mut(format!("I{ORDER_TEMPLATE_TOTAL_ROW}"))
+            .set_value(remark);
     }
 }
 
@@ -1132,34 +1132,35 @@ fn pdf_utf16_hex(text: &str) -> String {
 fn template_cell_style(column: u32, row: u32) -> Style {
     let mut style = base_template_style();
 
-    if row == 42 {
-        style.get_font_mut().get_font_name_mut().set_val("黑体");
+    if row == 1 {
         style.get_font_mut().get_font_size_mut().set_val(20.0);
         style.get_font_mut().set_bold(true);
     }
 
-    if row == 45 && (column == 1 || column == 4) {
+    if row == 4 && (column == 1 || column == 4) {
         style
             .get_alignment_mut()
             .set_horizontal(HorizontalAlignmentValues::Right);
     }
 
-    if (47..=61).contains(&row) && (column == 7 || column == 8) {
+    if (ORDER_TEMPLATE_DETAIL_FIRST_ROW..=ORDER_TEMPLATE_DETAIL_LAST_ROW).contains(&row)
+        && (column == 7 || column == 8)
+    {
         style
             .get_numbering_format_mut()
             .set_format_code("\\¥#,##0.00;[Red]\\¥\\-#,##0.00");
     }
-    if row == 62 && column == 3 {
+    if row == ORDER_TEMPLATE_TOTAL_ROW && column == 3 {
         style
             .get_numbering_format_mut()
             .set_format_code("[DBNum2][$RMB]General;[Red][DBNum2][$RMB]General");
     }
-    if row == 62 && column == 7 {
+    if row == ORDER_TEMPLATE_TOTAL_ROW && column == 7 {
         style
             .get_numbering_format_mut()
             .set_format_code("\\¥#,##0.00_);[Red]\\(\\¥#,##0.00\\)");
     }
-    if row == 45 && column == 9 {
+    if row == 4 && column == 9 {
         style.get_numbering_format_mut().set_format_code("mm-dd-yy");
     }
 
@@ -1169,7 +1170,7 @@ fn template_cell_style(column: u32, row: u32) -> Style {
 
 fn base_template_style() -> Style {
     let mut style = Style::default();
-    style.get_font_mut().get_font_name_mut().set_val("等线");
+    style.get_font_mut().get_font_name_mut().set_val("宋体");
     style.get_font_mut().get_font_size_mut().set_val(11.0);
     style
         .get_alignment_mut()
@@ -1181,48 +1182,57 @@ fn base_template_style() -> Style {
 }
 
 fn apply_template_borders(style: &mut Style, column: u32, row: u32) {
-    if row == 42 {
-        set_bottom_border(style);
+    if (1..=3).contains(&row) {
+        if row == 3 {
+            set_bottom_border(style);
+        }
         return;
     }
 
-    match row {
-        45 => {
-            if matches!(column, 1 | 4 | 7 | 9) {
-                set_left_border(style);
-            }
-            if matches!(column, 1 | 5 | 6 | 7 | 8 | 9 | 10) {
-                set_top_border(style);
-            }
-            if matches!(column, 5..=10) {
-                set_right_border(style);
-            }
-            set_bottom_border(style);
-        }
-        46..=61 => set_all_borders(style),
-        62 => {
-            if matches!(column, 1 | 3 | 6 | 7 | 9) {
-                set_left_border(style);
-            }
-            if matches!(column, 3 | 5 | 6 | 8 | 9 | 10) {
-                set_right_border(style);
-            }
-            if column <= 10 {
-                set_top_border(style);
-            }
-            if matches!(column, 1 | 2 | 3 | 4 | 5 | 9 | 10) {
-                set_bottom_border(style);
-            }
-        }
-        _ => {}
+    if (4..=ORDER_TEMPLATE_TOTAL_ROW).contains(&row) && column <= ORDER_TEMPLATE_LAST_COLUMN {
+        set_bottom_border(style);
+        set_left_border(style);
+        set_right_border(style);
+        set_top_border(style);
     }
 }
 
-fn set_all_borders(style: &mut Style) {
-    set_left_border(style);
-    set_right_border(style);
-    set_top_border(style);
-    set_bottom_border(style);
+fn order_template_merge_ranges() -> Vec<String> {
+    let mut ranges = vec![
+        "A1:K3".to_string(),
+        "E4:F4".to_string(),
+        "G4:H4".to_string(),
+        "I4:K4".to_string(),
+    ];
+    for row in 5..=ORDER_TEMPLATE_DETAIL_LAST_ROW {
+        ranges.push(format!("B{row}:C{row}"));
+        ranges.push(format!("I{row}:K{row}"));
+    }
+    ranges.extend([
+        "A21:B21".to_string(),
+        "C21:E21".to_string(),
+        "G21:H21".to_string(),
+        "I21:K21".to_string(),
+    ]);
+    ranges
+}
+
+fn set_order_template_view(sheet: &mut umya_spreadsheet::Worksheet) {
+    let mut coordinate = Coordinate::default();
+    coordinate.set_coordinate("A1");
+
+    let mut selection = Selection::default();
+    selection.set_active_cell(coordinate);
+    selection.get_sequence_of_references_mut().set_sqref("A1");
+
+    let mut view = SheetView::default();
+    view.set_workbook_view_id(0)
+        .set_top_left_cell("A1")
+        .set_selection(selection);
+
+    let mut views = SheetViews::default();
+    views.add_sheet_view_list_mut(view);
+    sheet.set_sheets_views(views);
 }
 
 fn set_left_border(style: &mut Style) {
@@ -1294,16 +1304,47 @@ mod tests {
             .map(|range| range.get_range())
             .collect::<Vec<_>>();
 
-        assert!(merge_ranges.contains(&"A42:J44".to_string()));
-        assert!(merge_ranges.contains(&"B47:C47".to_string()));
-        assert!(merge_ranges.contains(&"C62:E62".to_string()));
-        assert_eq!(*sheet.get_page_setup().get_paper_size(), 128);
+        assert_eq!(sheet.get_highest_column(), ORDER_TEMPLATE_LAST_COLUMN);
+        assert_eq!(sheet.get_highest_row(), ORDER_TEMPLATE_LAST_ROW);
+        assert!(merge_ranges.contains(&"A1:K3".to_string()));
+        assert!(merge_ranges.contains(&"B6:C6".to_string()));
+        assert!(merge_ranges.contains(&"C21:E21".to_string()));
+        assert!(merge_ranges.contains(&"I21:K21".to_string()));
+        let view = sheet
+            .get_sheets_views()
+            .get_sheet_view_list()
+            .first()
+            .expect("sheet view should be written");
+        let selection = view
+            .get_selection()
+            .first()
+            .expect("sheet selection should be written");
+        assert_eq!(view.get_top_left_cell(), "A1");
+        assert_eq!(
+            selection
+                .get_active_cell()
+                .map(|cell| cell.get_coordinate()),
+            Some("A1".to_string())
+        );
+        assert_eq!(selection.get_sequence_of_references().get_sqref(), "A1");
+        assert_eq!(*sheet.get_page_setup().get_paper_size(), 9);
+        assert_eq!(*sheet.get_page_setup().get_fit_to_width(), 1);
+        assert_eq!(*sheet.get_page_setup().get_fit_to_height(), 1);
+        assert_eq!(
+            sheet
+                .get_defined_names()
+                .iter()
+                .find(|name| name.get_name() == "_xlnm.Print_Area")
+                .map(|name| name.get_address()),
+            Some("'单据'!$A$1:$K$21".to_string())
+        );
         assert!(matches!(
             sheet.get_page_setup().get_orientation(),
             OrientationValues::Portrait
         ));
-        assert_eq!(sheet.get_value("A42"), "我的商行");
-        assert_eq!(sheet.get_value("D46"), "商品名称");
+        assert_eq!(sheet.get_value("A1"), "我的商行");
+        assert_eq!(sheet.get_value("D5"), "商品名称");
+        assert_eq!(sheet.get_value("A21"), "总金额");
     }
 
     #[test]
@@ -1329,14 +1370,14 @@ mod tests {
 
         let book = umya_spreadsheet::reader::xlsx::read(&path).unwrap();
         let sheet = book.get_sheet_by_name("单据").unwrap();
-        assert_eq!(sheet.get_value("A42"), "测试门店");
-        assert_eq!(sheet.get_value("B46"), "");
-        assert_eq!(sheet.get_value("D46"), "品名");
-        assert_eq!(sheet.get_value("F46"), "件数");
-        assert_eq!(sheet.get_value("G46"), "单价");
-        assert_eq!(sheet.get_value("H46"), "金额");
-        assert_eq!(sheet.get_value("I46"), "说明");
-        assert_eq!(sheet.get_value("A64"), "默认页脚");
+        assert_eq!(sheet.get_value("A1"), "测试门店");
+        assert_eq!(sheet.get_value("B5"), "");
+        assert_eq!(sheet.get_value("D5"), "品名");
+        assert_eq!(sheet.get_value("F5"), "件数");
+        assert_eq!(sheet.get_value("G5"), "单价");
+        assert_eq!(sheet.get_value("H5"), "金额");
+        assert_eq!(sheet.get_value("I5"), "说明");
+        assert_eq!(sheet.get_value("I21"), "默认页脚");
         assert!(matches!(
             sheet.get_page_setup().get_orientation(),
             OrientationValues::Landscape

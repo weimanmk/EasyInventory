@@ -1,6 +1,6 @@
 use crate::db;
 use crate::models::*;
-use crate::utils::{money, now_text};
+use crate::utils::{money, normalize_user_file_path, now_text};
 use anyhow::{anyhow, Context};
 use calamine::{open_workbook_auto, Data, Reader};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -338,8 +338,9 @@ pub fn preview_generic_import_headers(
 ) -> anyhow::Result<GenericImportHeadersDto> {
     let import_type = request.import_type.trim();
     ensure_supported_generic_import_type(import_type)?;
-    let mut workbook = open_workbook_auto(&request.file_path)
-        .with_context(|| format!("无法打开 Excel 文件：{}", request.file_path))?;
+    let normalized_path = normalize_user_file_path(&request.file_path);
+    let mut workbook = open_workbook_auto(&normalized_path)
+        .with_context(|| format!("无法打开 Excel 文件：{normalized_path}"))?;
     let sheet_name = workbook
         .sheet_names()
         .first()
@@ -636,8 +637,9 @@ fn parse_generic_import_rows(
 ) -> anyhow::Result<Vec<GenericImportRowDto>> {
     let import_type = request.import_type.trim();
     ensure_supported_generic_import_type(import_type)?;
-    let mut workbook = open_workbook_auto(&request.file_path)
-        .with_context(|| format!("无法打开 Excel 文件：{}", request.file_path))?;
+    let normalized_path = normalize_user_file_path(&request.file_path);
+    let mut workbook = open_workbook_auto(&normalized_path)
+        .with_context(|| format!("无法打开 Excel 文件：{normalized_path}"))?;
     let sheet_name = workbook
         .sheet_names()
         .first()
@@ -1781,7 +1783,7 @@ mod tests {
 
         let preview = preview_generic_import_headers(GenericImportHeaderRequest {
             import_type: "products".to_string(),
-            file_path: path.to_string_lossy().to_string(),
+            file_path: format!("\u{202A}\"{}\"\u{202C}", path.to_string_lossy()),
         })
         .unwrap();
 

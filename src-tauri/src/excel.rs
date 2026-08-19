@@ -1,13 +1,16 @@
 use crate::app::AppState;
 use crate::db;
 use crate::models::ImportResult;
-use crate::utils::{money, normalize_date, now_text};
+use crate::utils::{money, normalize_date, normalize_user_file_path, now_text};
+use anyhow::Context;
 use calamine::{open_workbook_auto, Data, Reader};
 use rusqlite::{params, Connection};
 use std::collections::HashMap;
 
 pub fn import_excel_file(state: &AppState, file_path: &str) -> anyhow::Result<ImportResult> {
-    let mut workbook = open_workbook_auto(file_path)?;
+    let normalized_path = normalize_user_file_path(file_path);
+    let mut workbook = open_workbook_auto(&normalized_path)
+        .with_context(|| format!("无法打开 Excel 文件：{normalized_path}"))?;
     let mut conn = state.connection()?;
     let tx = conn.transaction()?;
     clear_business_tables(&tx)?;

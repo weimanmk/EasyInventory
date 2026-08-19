@@ -52,7 +52,51 @@ pub fn safe_file_name(input: &str) -> String {
     }
 }
 
+pub fn normalize_user_file_path(input: &str) -> String {
+    let without_controls = input
+        .trim_matches(|ch| matches!(ch, '"' | '\'' | '“' | '”' | '‘' | '’'))
+        .chars()
+        .filter(|ch| !is_path_format_control(*ch))
+        .collect::<String>();
+    without_controls
+        .trim()
+        .trim_matches(|ch| matches!(ch, '"' | '\'' | '“' | '”' | '‘' | '’'))
+        .trim()
+        .to_string()
+}
+
+fn is_path_format_control(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{200E}'
+            | '\u{200F}'
+            | '\u{202A}'
+            | '\u{202B}'
+            | '\u{202C}'
+            | '\u{202D}'
+            | '\u{202E}'
+            | '\u{2066}'
+            | '\u{2067}'
+            | '\u{2068}'
+            | '\u{2069}'
+            | '\u{FEFF}'
+    )
+}
+
 pub fn ensure_dir(path: &Path) -> anyhow::Result<PathBuf> {
     fs::create_dir_all(path)?;
     Ok(path.to_path_buf())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_user_file_path_removes_hidden_format_controls() {
+        assert_eq!(
+            normalize_user_file_path(" \u{202A}\"C:/导入/订单库存表3.02.xlsm\"\u{202C} "),
+            "C:/导入/订单库存表3.02.xlsm"
+        );
+    }
 }
