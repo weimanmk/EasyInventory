@@ -67,7 +67,9 @@ const output = path.join(releaseDir, `EasyInventory_${pkg.version}_release_manif
 writeFileSync(output, `${body}\n`, 'utf8');
 
 const releaseNotes = [
-  '## 这次让连续纸知道哪里该停 :)',
+  `## EasyInventory v${pkg.version}`,
+  '',
+  '这次让连续纸知道哪里该停 :)',
   '',
   '### 下载',
   '',
