@@ -44,7 +44,7 @@ const checks = [
     name: '项目自动化测试入口完整',
     run() {
       requireAll('package.json', [
-        ['"version": "1.3.2"', '前端包版本为 V1.3.2'],
+        ['"version": "1.3.3"', '前端包版本为 V1.3.3'],
         ['"e2e:flows": "node scripts/e2e-flow-check.mjs"', '前端核心流程验收脚本'],
         ['"e2e:browser": "npm run build && node scripts/browser-e2e-check.mjs"', '浏览器级前端 E2E 脚本'],
         ['"package:smoke": "node scripts/package-smoke-check.mjs"', '安装包产物 smoke 检查脚本'],
@@ -90,8 +90,8 @@ const checks = [
         ['升级说明', '升级说明'],
         ['已知问题', '已知问题']
       ]);
-      requireAll('src-tauri/Cargo.toml', [['version = "1.3.2"', 'Rust 包版本为 V1.3.2']]);
-      requireAll('src-tauri/tauri.conf.json', [['"version": "1.3.2"', 'Tauri 打包版本为 V1.3.2']]);
+      requireAll('src-tauri/Cargo.toml', [['version = "1.3.3"', 'Rust 包版本为 V1.3.3']]);
+      requireAll('src-tauri/tauri.conf.json', [['"version": "1.3.3"', 'Tauri 打包版本为 V1.3.3']]);
     }
   },
   {
@@ -122,7 +122,7 @@ const checks = [
       requireAll('.github/pull_request_template.md', [['Verification', 'PR 模板包含验证清单']]);
       requireAll('README.md', [
         ['## 快速下载安装', 'README 提供下载说明'],
-        ['https://github.com/weimanmk/EasyInventory/releases/tag/v1.3.2', 'README 提供当前版本 Release 下载入口'],
+        ['https://github.com/weimanmk/EasyInventory/releases/tag/v1.3.3', 'README 提供当前版本 Release 下载入口'],
         ['## 10 分钟快速试用', 'README 提供快速试用路径'],
         ['## 数据安全边界', 'README 说明数据安全边界'],
         ['docs/images/outbound_page.png', 'README 展示快速出库截图'],
@@ -136,12 +136,12 @@ const checks = [
         ['CONTRIBUTING.md', 'README 链接贡献指南'],
         ['npm run release:manifest', 'README 说明 Release 清单命令'],
         ['docs/release-checklist.md', 'README 链接 Release checklist'],
-        ['EasyInventory_1.3.2_github_release_notes.md', 'README 说明 GitHub Release 正文文件'],
+        ['EasyInventory_1.3.3_github_release_notes.md', 'README 说明 GitHub Release 正文文件'],
         ['诊断包会对常见敏感字段做默认脱敏', 'README 说明诊断包默认脱敏']
       ]);
       requireAll('SECURITY.md', [
         ['反馈问题前请脱敏', '安全说明提醒反馈前脱敏'],
-        ['EasyInventory v1.3.2', '安全说明覆盖当前版本']
+        ['EasyInventory v1.3.3', '安全说明覆盖当前版本']
       ]);
       requireAll('CONTRIBUTING.md', [
         ['npm run check', '贡献指南说明完整检查命令'],

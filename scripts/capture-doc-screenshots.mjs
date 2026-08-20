@@ -190,7 +190,7 @@ async function installTauriMock(targetPage) {
             return ok(true);
           case 'get_app_status':
             return ok({
-              version: '1.3.2',
+              version: '1.3.3',
               databasePath: 'C:/Users/User/AppData/Roaming/EasyInventory/data/inventory.db',
               dataDir: 'C:/Users/User/AppData/Roaming/EasyInventory',
               ordersDir: 'C:/Users/User/AppData/Roaming/EasyInventory/orders',
@@ -249,7 +249,7 @@ async function installTauriMock(targetPage) {
           case 'list_audit_logs':
             return ok([{ id: 1, logTime: '2026-06-01 09:00:00', module: 'system', action: 'backup', targetType: 'database', targetId: null, targetLabel: '手动备份', result: 'success', message: '备份完成', details: null }]);
           case 'get_diagnostic_summary':
-            return ok({ databasePath: 'inventory.db', databaseSize: 2048, version: '1.3.2', backupCount: 1, latestBackupAt: '2026-06-01 09:00:00', productCount: products.length, customerCount: customers.length, orderCount: 1, documentCount: 1, latestLogs: [] });
+            return ok({ databasePath: 'inventory.db', databaseSize: 2048, version: '1.3.3', backupCount: 1, latestBackupAt: '2026-06-01 09:00:00', productCount: products.length, customerCount: customers.length, orderCount: 1, documentCount: 1, latestLogs: [] });
           case 'list_industry_templates':
             return ok([{ id: 'general_wholesale', name: '通用批发', description: '适合通用商贸批发场景。', terms: {}, features: {}, orderTemplate: 'general' }]);
           case 'list_document_templates':

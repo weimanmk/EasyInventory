@@ -7,20 +7,30 @@ use crate::services::customer_statement_service;
 use crate::utils::{money, now_text, safe_file_name};
 use anyhow::anyhow;
 use rusqlite::{params, params_from_iter, types::Value, Connection};
+use std::io::{Cursor, Read, Write};
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use umya_spreadsheet::{
     self, writer::xlsx, Border, Coordinate, HorizontalAlignmentValues, OrientationValues,
     Selection, SheetView, SheetViews, Style, VerticalAlignmentValues,
 };
+use zip::{ZipArchive, ZipWriter};
 
 const ORDER_TEMPLATE_LAST_COLUMN: u32 = 11;
 const ORDER_TEMPLATE_LAST_ROW: u32 = 21;
 const ORDER_TEMPLATE_DETAIL_FIRST_ROW: u32 = 6;
 const ORDER_TEMPLATE_DETAIL_LAST_ROW: u32 = 20;
 const ORDER_TEMPLATE_TOTAL_ROW: u32 = 21;
+const ORDER_CUSTOM_PAGE_SETUP_XML: &str = r#"<pageSetup paperWidth="9.5in" paperHeight="5.5in" orientation="landscape" fitToHeight="1" fitToWidth="1"/>"#;
+const ORDER_FIT_TO_PAGE_XML: &str = r#"<pageSetUpPr fitToPage="1"/>"#;
+const ORDER_PRINT_AREA: &str = "'单据'!$A$1:$K$21";
+const ORDER_DEFAULT_COLUMN_WIDTH: f64 = 9.0;
+const ORDER_DEFAULT_ROW_HEIGHT_POINTS: f64 = 13.5;
+const ORDER_DEFAULT_HORIZONTAL_MARGIN_INCHES: f64 = 0.7;
+const ORDER_DEFAULT_VERTICAL_MARGIN_INCHES: f64 = 0.75;
+const ORDER_DEFAULT_HEADER_FOOTER_MARGIN_INCHES: f64 = 0.3;
 
 type ExportRows = Vec<Vec<String>>;
 type ExportTable = (&'static str, Vec<&'static str>, ExportRows);
@@ -50,7 +60,7 @@ impl Default for OrderTemplateSettings {
             price_label: "价格".to_string(),
             amount_label: "总价格".to_string(),
             remark_label: "备注".to_string(),
-            orientation: "portrait".to_string(),
+            orientation: "landscape".to_string(),
             margin: 0.0,
         }
     }
@@ -112,19 +122,7 @@ pub fn export_order_document(state: &AppState, order_id: i64) -> anyhow::Result<
     ));
     write_order_workbook_with_template(&file_path, &detail, &template)?;
     let now = now_text();
-    conn.execute(
-        "INSERT INTO documents (order_id, order_no, customer_id, customer_name, file_path, file_type, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, 'xlsx', ?6)
-         ON CONFLICT DO NOTHING",
-        params![
-            detail.order.id,
-            detail.order.order_no,
-            detail.order.customer_id,
-            detail.order.customer_name,
-            file_path.to_string_lossy().to_string(),
-            now
-        ],
-    )?;
+    persist_order_document(&conn, &detail, &file_path, "xlsx", &now)?;
     conn.execute(
         "UPDATE orders SET document_path = ?1, updated_at = ?2 WHERE id = ?3",
         params![file_path.to_string_lossy().to_string(), now, order_id],
@@ -147,19 +145,39 @@ pub fn export_order_pdf_document(state: &AppState, order_id: i64) -> anyhow::Res
     ));
     write_order_pdf(&file_path, &detail, &template)?;
     let now = now_text();
+    persist_order_document(&conn, &detail, &file_path, "pdf", &now)?;
+    Ok(file_path.to_string_lossy().to_string())
+}
+
+fn persist_order_document(
+    conn: &Connection,
+    detail: &crate::models::OrderDetailDto,
+    file_path: &Path,
+    file_type: &str,
+    created_at: &str,
+) -> anyhow::Result<()> {
     conn.execute(
-        "INSERT INTO documents (order_id, order_no, customer_id, customer_name, file_path, file_type, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, 'pdf', ?6)",
+        "INSERT INTO documents
+         (order_id, order_no, customer_id, customer_name, file_path, file_type, status, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(order_id, file_type) DO UPDATE SET
+           order_no = excluded.order_no,
+           customer_id = excluded.customer_id,
+           customer_name = excluded.customer_name,
+           file_path = excluded.file_path,
+           status = excluded.status",
         params![
             detail.order.id,
             detail.order.order_no,
             detail.order.customer_id,
             detail.order.customer_name,
             file_path.to_string_lossy().to_string(),
-            now
+            file_type,
+            detail.order.status,
+            created_at
         ],
     )?;
-    Ok(file_path.to_string_lossy().to_string())
+    Ok(())
 }
 
 pub fn export_customer_statement_pdf_document(
@@ -767,7 +785,96 @@ fn write_order_workbook_with_template(
     write_order_template_values(sheet, detail, template);
 
     xlsx::write(&book, path)?;
+    finalize_order_workbook_page_setup(path)?;
     Ok(())
+}
+
+fn finalize_order_workbook_page_setup(path: &Path) -> anyhow::Result<()> {
+    let bytes = {
+        let source = std::fs::File::open(path)?;
+        let mut archive = ZipArchive::new(source)?;
+        let output = Cursor::new(Vec::new());
+        let mut writer = ZipWriter::new(output);
+        let mut patched_sheet = false;
+
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index)?;
+            if entry.name() == "xl/worksheets/sheet1.xml" {
+                let options = entry.options();
+                let name = entry.name().to_string();
+                let mut xml = String::new();
+                entry.read_to_string(&mut xml)?;
+                let patched = patch_order_sheet_page_setup(&xml)?;
+                writer.start_file(name, options)?;
+                writer.write_all(patched.as_bytes())?;
+                patched_sheet = true;
+            } else {
+                writer.raw_copy_file(entry)?;
+            }
+        }
+
+        if !patched_sheet {
+            return Err(anyhow!("订单工作簿缺少 sheet1.xml"));
+        }
+        writer.finish()?.into_inner()
+    };
+
+    std::fs::write(path, bytes)?;
+    Ok(())
+}
+
+fn patch_order_sheet_page_setup(xml: &str) -> anyhow::Result<String> {
+    let mut patched = xml.to_string();
+    let setup_start = patched
+        .find("<pageSetup")
+        .ok_or_else(|| anyhow!("订单工作表缺少 pageSetup"))?;
+    let setup_end = patched[setup_start..]
+        .find("/>")
+        .map(|offset| setup_start + offset + 2)
+        .ok_or_else(|| anyhow!("订单工作表 pageSetup 格式异常"))?;
+    patched.replace_range(setup_start..setup_end, ORDER_CUSTOM_PAGE_SETUP_XML);
+
+    if let Some(property_start) = patched.find("<pageSetUpPr") {
+        let property_end = patched[property_start..]
+            .find("/>")
+            .map(|offset| property_start + offset + 2)
+            .ok_or_else(|| anyhow!("订单工作表 pageSetUpPr 格式异常"))?;
+        patched.replace_range(property_start..property_end, ORDER_FIT_TO_PAGE_XML);
+        return Ok(patched);
+    }
+
+    if let Some(sheet_properties_start) = patched.find("<sheetPr") {
+        let open_end = patched[sheet_properties_start..]
+            .find('>')
+            .map(|offset| sheet_properties_start + offset)
+            .ok_or_else(|| anyhow!("订单工作表 sheetPr 格式异常"))?;
+        let opening_tag = &patched[sheet_properties_start..=open_end];
+        if opening_tag.trim_end_matches('>').trim_end().ends_with('/') {
+            patched.replace_range(
+                sheet_properties_start..=open_end,
+                &format!("<sheetPr>{ORDER_FIT_TO_PAGE_XML}</sheetPr>"),
+            );
+        } else {
+            let close = patched
+                .find("</sheetPr>")
+                .ok_or_else(|| anyhow!("订单工作表 sheetPr 未闭合"))?;
+            patched.insert_str(close, ORDER_FIT_TO_PAGE_XML);
+        }
+        return Ok(patched);
+    }
+
+    let worksheet_start = patched
+        .find("<worksheet")
+        .ok_or_else(|| anyhow!("订单工作表根节点缺失"))?;
+    let root_end = patched[worksheet_start..]
+        .find('>')
+        .map(|offset| worksheet_start + offset + 1)
+        .ok_or_else(|| anyhow!("订单工作表根节点格式异常"))?;
+    patched.insert_str(
+        root_end,
+        &format!("<sheetPr>{ORDER_FIT_TO_PAGE_XML}</sheetPr>"),
+    );
+    Ok(patched)
 }
 
 fn apply_order_template_layout(
@@ -776,10 +883,14 @@ fn apply_order_template_layout(
 ) {
     sheet.set_active_cell("A1");
     set_order_template_view(sheet);
+    sheet
+        .get_sheet_format_properties_mut()
+        .set_default_column_width(ORDER_DEFAULT_COLUMN_WIDTH)
+        .set_default_row_height(ORDER_DEFAULT_ROW_HEIGHT_POINTS);
     for column in 1..=ORDER_TEMPLATE_LAST_COLUMN {
         sheet
             .get_column_dimension_mut(&column_name(column))
-            .set_width(13.0);
+            .set_width(ORDER_DEFAULT_COLUMN_WIDTH);
     }
 
     for range in order_template_merge_ranges() {
@@ -793,20 +904,25 @@ fn apply_order_template_layout(
         } else {
             OrientationValues::Portrait
         })
-        .set_paper_size(9)
         .set_fit_to_width(1)
-        .set_fit_to_height(1)
-        .set_horizontal_dpi(300)
-        .set_vertical_dpi(300);
+        .set_fit_to_height(1);
+    let (horizontal_margin, vertical_margin) = if template.margin > f64::EPSILON {
+        (template.margin, template.margin)
+    } else {
+        (
+            ORDER_DEFAULT_HORIZONTAL_MARGIN_INCHES,
+            ORDER_DEFAULT_VERTICAL_MARGIN_INCHES,
+        )
+    };
     sheet
         .get_page_margins_mut()
-        .set_left(template.margin)
-        .set_right(template.margin)
-        .set_top(template.margin)
-        .set_bottom(template.margin)
-        .set_header(0.0)
-        .set_footer(0.0);
-    let _ = sheet.add_defined_name("_xlnm.Print_Area", "'单据'!$A$1:$K$21");
+        .set_left(horizontal_margin)
+        .set_right(horizontal_margin)
+        .set_top(vertical_margin)
+        .set_bottom(vertical_margin)
+        .set_header(ORDER_DEFAULT_HEADER_FOOTER_MARGIN_INCHES)
+        .set_footer(ORDER_DEFAULT_HEADER_FOOTER_MARGIN_INCHES);
+    let _ = sheet.add_defined_name("_xlnm.Print_Area", ORDER_PRINT_AREA);
 
     for row in 1..=ORDER_TEMPLATE_LAST_ROW {
         for column in 1..=ORDER_TEMPLATE_LAST_COLUMN {
@@ -1288,6 +1404,15 @@ mod tests {
     };
     use std::time::{Duration, Instant};
 
+    fn read_xlsx_entry(path: &Path, entry_name: &str) -> String {
+        let file = std::fs::File::open(path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let mut entry = archive.by_name(entry_name).unwrap();
+        let mut content = String::new();
+        std::io::Read::read_to_string(&mut entry, &mut content).unwrap();
+        content
+    }
+
     #[test]
     fn order_workbook_matches_source_print_template() {
         let dir = tempfile::tempdir().unwrap();
@@ -1296,6 +1421,7 @@ mod tests {
 
         write_order_workbook(&path, &detail).unwrap();
 
+        let sheet_xml = read_xlsx_entry(&path, "xl/worksheets/sheet1.xml");
         let book = umya_spreadsheet::reader::xlsx::read(&path).unwrap();
         let sheet = book.get_sheet_by_name("单据").unwrap();
         let merge_ranges = sheet
@@ -1327,20 +1453,54 @@ mod tests {
             Some("A1".to_string())
         );
         assert_eq!(selection.get_sequence_of_references().get_sqref(), "A1");
-        assert_eq!(*sheet.get_page_setup().get_paper_size(), 9);
+        assert_eq!(
+            *sheet
+                .get_sheet_format_properties()
+                .get_default_column_width(),
+            ORDER_DEFAULT_COLUMN_WIDTH
+        );
+        assert_eq!(
+            *sheet.get_sheet_format_properties().get_default_row_height(),
+            ORDER_DEFAULT_ROW_HEIGHT_POINTS
+        );
+        assert_eq!(
+            sheet.get_column_dimensions().len(),
+            ORDER_TEMPLATE_LAST_COLUMN as usize
+        );
+        assert!(sheet
+            .get_column_dimensions()
+            .iter()
+            .all(|column| (*column.get_width() - ORDER_DEFAULT_COLUMN_WIDTH).abs() < f64::EPSILON));
+        assert!(sheet_xml.contains(ORDER_CUSTOM_PAGE_SETUP_XML));
+        assert!(sheet_xml.contains(&format!("<sheetPr>{ORDER_FIT_TO_PAGE_XML}</sheetPr>")));
         assert_eq!(*sheet.get_page_setup().get_fit_to_width(), 1);
         assert_eq!(*sheet.get_page_setup().get_fit_to_height(), 1);
+        assert_eq!(*sheet.get_page_setup().get_horizontal_dpi(), 0);
+        assert_eq!(*sheet.get_page_setup().get_vertical_dpi(), 0);
         assert_eq!(
             sheet
                 .get_defined_names()
                 .iter()
                 .find(|name| name.get_name() == "_xlnm.Print_Area")
                 .map(|name| name.get_address()),
-            Some("'单据'!$A$1:$K$21".to_string())
+            Some(ORDER_PRINT_AREA.to_string())
+        );
+        let margins = sheet.get_page_margins();
+        assert_eq!(*margins.get_left(), ORDER_DEFAULT_HORIZONTAL_MARGIN_INCHES);
+        assert_eq!(*margins.get_right(), ORDER_DEFAULT_HORIZONTAL_MARGIN_INCHES);
+        assert_eq!(*margins.get_top(), ORDER_DEFAULT_VERTICAL_MARGIN_INCHES);
+        assert_eq!(*margins.get_bottom(), ORDER_DEFAULT_VERTICAL_MARGIN_INCHES);
+        assert_eq!(
+            *margins.get_header(),
+            ORDER_DEFAULT_HEADER_FOOTER_MARGIN_INCHES
+        );
+        assert_eq!(
+            *margins.get_footer(),
+            ORDER_DEFAULT_HEADER_FOOTER_MARGIN_INCHES
         );
         assert!(matches!(
             sheet.get_page_setup().get_orientation(),
-            OrientationValues::Portrait
+            OrientationValues::Landscape
         ));
         assert_eq!(sheet.get_value("A1"), "我的商行");
         assert_eq!(sheet.get_value("D5"), "商品名称");
@@ -1382,6 +1542,11 @@ mod tests {
             sheet.get_page_setup().get_orientation(),
             OrientationValues::Landscape
         ));
+        let margins = sheet.get_page_margins();
+        assert_eq!(*margins.get_left(), 0.25);
+        assert_eq!(*margins.get_right(), 0.25);
+        assert_eq!(*margins.get_top(), 0.25);
+        assert_eq!(*margins.get_bottom(), 0.25);
     }
 
     #[test]
@@ -2032,6 +2197,85 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].order_no, "20260601001");
         assert_eq!(rows[0].status, "normal");
+    }
+
+    #[test]
+    fn persist_order_document_keeps_one_record_per_file_type() {
+        let conn = Connection::open_in_memory().unwrap();
+        db::init_schema(&conn).unwrap();
+        let detail = sample_order_detail();
+        let first_path = PathBuf::from("first.xlsx");
+        let latest_path = PathBuf::from("latest.xlsx");
+        conn.execute(
+            "INSERT INTO customers
+             (id, region, name, is_active, created_at, updated_at)
+             VALUES (?1, '测试', ?2, 1, ?3, ?3)",
+            params![
+                detail.order.customer_id,
+                detail.order.customer_name,
+                "2026-08-19 10:00:00"
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO orders
+             (id, order_no, order_date, customer_id, customer_name, status, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+            params![
+                detail.order.id,
+                detail.order.order_no,
+                detail.order.order_date,
+                detail.order.customer_id,
+                detail.order.customer_name,
+                detail.order.status,
+                "2026-08-19 10:00:00"
+            ],
+        )
+        .unwrap();
+
+        persist_order_document(&conn, &detail, &first_path, "xlsx", "2026-08-19 10:00:00").unwrap();
+        conn.execute(
+            "UPDATE documents SET print_count = 2, printed_at = '2026-08-19 10:01:00'",
+            [],
+        )
+        .unwrap();
+        persist_order_document(&conn, &detail, &latest_path, "xlsx", "2026-08-19 10:02:00")
+            .unwrap();
+        persist_order_document(
+            &conn,
+            &detail,
+            &PathBuf::from("latest.pdf"),
+            "pdf",
+            "2026-08-19 10:03:00",
+        )
+        .unwrap();
+
+        let xlsx: (i64, String, i64, Option<String>, String) = conn
+            .query_row(
+                "SELECT COUNT(*), file_path, print_count, printed_at, created_at
+                 FROM documents WHERE order_id = ?1 AND file_type = 'xlsx'",
+                [detail.order.id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM documents", [], |row| row.get(0))
+            .unwrap();
+
+        assert_eq!(xlsx.0, 1);
+        assert_eq!(xlsx.1, "latest.xlsx");
+        assert_eq!(xlsx.2, 2);
+        assert_eq!(xlsx.3.as_deref(), Some("2026-08-19 10:01:00"));
+        assert_eq!(xlsx.4, "2026-08-19 10:00:00");
+        assert_eq!(total, 2);
     }
 
     #[test]

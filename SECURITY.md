@@ -1,6 +1,6 @@
 # Security Policy
 
-## EasyInventory v1.3.2
+## EasyInventory v1.3.3
 
 EasyInventory is a local-first Windows desktop application. Business data is stored in the local SQLite database and is not uploaded by the application.
 
@@ -30,7 +30,7 @@ Current security work focuses on:
 - Runtime SQLite lock waiting through `busy_timeout`.
 - Clear release artifacts and SHA256 checksums.
 
-Out of scope for v1.3.2:
+Out of scope for v1.3.3:
 
 - Multi-user permission systems.
 - Cloud account security.

@@ -762,7 +762,7 @@ function settingsToForm(settings: SettingDto[], merchantName: string) {
     templatePriceLabel: map.template_price_label || '价格',
     templateAmountLabel: map.template_amount_label || '总价格',
     templateRemarkLabel: map.template_remark_label || '备注',
-    templateOrientation: map.template_orientation || 'portrait',
+    templateOrientation: map.template_orientation || 'landscape',
     templateMargin: Number(map.template_margin || 0)
   };
 }

@@ -340,6 +340,56 @@ fn ensure_compatible_schema(conn: &Connection) -> anyhow::Result<()> {
     }
     ensure_column(conn, "inbound_records", "supplier_id", "INTEGER")?;
     ensure_column(conn, "inbound_records", "supplier_name", "TEXT")?;
+    ensure_unique_order_documents(conn)?;
+    Ok(())
+}
+
+fn ensure_unique_order_documents(conn: &Connection) -> anyhow::Result<()> {
+    conn.execute(
+        "UPDATE documents SET file_type = 'xlsx'
+         WHERE file_type IS NULL OR TRIM(file_type) = ''",
+        [],
+    )?;
+    conn.execute(
+        "UPDATE documents AS keeper
+         SET print_count = (
+               SELECT COALESCE(SUM(COALESCE(candidate.print_count, 0)), 0)
+               FROM documents AS candidate
+               WHERE candidate.order_id = keeper.order_id
+                 AND candidate.file_type = keeper.file_type
+             ),
+             printed_at = (
+               SELECT MAX(candidate.printed_at)
+               FROM documents AS candidate
+               WHERE candidate.order_id = keeper.order_id
+                 AND candidate.file_type = keeper.file_type
+             )
+         WHERE keeper.id IN (
+           SELECT MAX(id) FROM documents GROUP BY order_id, file_type
+         )",
+        [],
+    )?;
+    conn.execute(
+        "DELETE FROM documents
+         WHERE id NOT IN (
+           SELECT MAX(id) FROM documents GROUP BY order_id, file_type
+         )",
+        [],
+    )?;
+    conn.execute(
+        "UPDATE documents
+         SET status = COALESCE(
+           (SELECT orders.status FROM orders WHERE orders.id = documents.order_id),
+           status,
+           'normal'
+         )",
+        [],
+    )?;
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_order_file_type
+         ON documents(order_id, file_type)",
+        [],
+    )?;
     Ok(())
 }
 
@@ -365,6 +415,7 @@ fn ensure_column(
 
 pub fn seed_settings(conn: &Connection) -> anyhow::Result<()> {
     let now = now_text();
+    let continuous_form_migrated = setting(conn, "continuous_form_page_setup_v1")?.is_some();
     let defaults = [
         ("allow_negative_stock", "false"),
         ("daily_auto_backup", "true"),
@@ -404,7 +455,7 @@ pub fn seed_settings(conn: &Connection) -> anyhow::Result<()> {
         ("template_price_label", "价格"),
         ("template_amount_label", "总价格"),
         ("template_remark_label", "备注"),
-        ("template_orientation", "portrait"),
+        ("template_orientation", "landscape"),
         ("template_margin", "0"),
         ("last_auto_backup_date", ""),
     ];
@@ -413,6 +464,10 @@ pub fn seed_settings(conn: &Connection) -> anyhow::Result<()> {
             "INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES (?1, ?2, ?3)",
             params![key, value, now],
         )?;
+    }
+    if !continuous_form_migrated {
+        set_setting(conn, "template_orientation", "landscape")?;
+        set_setting(conn, "continuous_form_page_setup_v1", "true")?;
     }
     Ok(())
 }
@@ -793,6 +848,85 @@ mod tests {
             setting(&conn, "term_credit").unwrap().as_deref(),
             Some("返利额度")
         );
+        assert_eq!(
+            setting(&conn, "template_orientation").unwrap().as_deref(),
+            Some("landscape")
+        );
+        assert_eq!(
+            setting(&conn, "continuous_form_page_setup_v1")
+                .unwrap()
+                .as_deref(),
+            Some("true")
+        );
+    }
+
+    #[test]
+    fn seed_settings_migrates_legacy_continuous_form_to_landscape_once() {
+        let conn = memory_conn();
+        set_setting(&conn, "template_orientation", "portrait").unwrap();
+
+        seed_settings(&conn).unwrap();
+        assert_eq!(
+            setting(&conn, "template_orientation").unwrap().as_deref(),
+            Some("landscape")
+        );
+
+        set_setting(&conn, "template_orientation", "portrait").unwrap();
+        seed_settings(&conn).unwrap();
+        assert_eq!(
+            setting(&conn, "template_orientation").unwrap().as_deref(),
+            Some("portrait")
+        );
+    }
+
+    #[test]
+    fn document_schema_migration_merges_duplicate_paths() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE orders (
+               id INTEGER PRIMARY KEY,
+               status TEXT DEFAULT 'normal'
+             );
+             CREATE TABLE documents (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               order_id INTEGER NOT NULL,
+               file_path TEXT NOT NULL,
+               file_type TEXT,
+               printed_at TEXT,
+               print_count INTEGER DEFAULT 0,
+               status TEXT DEFAULT 'normal'
+             );
+             INSERT INTO orders (id, status) VALUES (1, 'normal');
+             INSERT INTO documents
+               (order_id, file_path, file_type, printed_at, print_count, status)
+             VALUES
+               (1, 'same.xlsx', 'xlsx', '2026-08-19 10:00:00', 1, 'normal'),
+               (1, 'same.xlsx', 'xlsx', '2026-08-19 10:01:00', 2, 'normal'),
+               (1, 'same.pdf', 'pdf', NULL, 0, 'normal');",
+        )
+        .unwrap();
+
+        ensure_unique_order_documents(&conn).unwrap();
+
+        let xlsx: (i64, i64, i64, Option<String>) = conn
+            .query_row(
+                "SELECT COUNT(*), MAX(id), print_count, printed_at
+                 FROM documents WHERE order_id = 1 AND file_type = 'xlsx'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        let duplicate_insert = conn.execute(
+            "INSERT INTO documents (order_id, file_path, file_type)
+             VALUES (1, 'duplicate.xlsx', 'xlsx')",
+            [],
+        );
+
+        assert_eq!(xlsx.0, 1);
+        assert_eq!(xlsx.1, 2);
+        assert_eq!(xlsx.2, 3);
+        assert_eq!(xlsx.3.as_deref(), Some("2026-08-19 10:01:00"));
+        assert!(duplicate_insert.is_err());
     }
 
     #[test]

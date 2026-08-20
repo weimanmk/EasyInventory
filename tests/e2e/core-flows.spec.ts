@@ -463,7 +463,7 @@ async function installTauriMock(page: Page) {
             return ok(true);
           case 'get_app_status':
             return ok({
-              version: '1.3.2',
+              version: '1.3.3',
               databasePath: 'C:/tmp/inventory.db',
               dataDir: 'C:/tmp',
               ordersDir: 'C:/tmp/orders',
@@ -544,7 +544,7 @@ async function installTauriMock(page: Page) {
             return ok({
               databasePath: 'C:/tmp/inventory.db',
               databaseSize: 1024,
-              version: '1.3.2',
+              version: '1.3.3',
               backupCount: 0,
               latestBackupAt: null,
               productCount: products.length,

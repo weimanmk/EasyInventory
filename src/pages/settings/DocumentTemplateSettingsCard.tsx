@@ -64,7 +64,7 @@ export function DocumentTemplateSettingsCard({
             <Input />
           </Form.Item>
           <Form.Item label="纸张方向" name="templateOrientation" style={{ width: '20%' }}>
-            <Select options={[{ value: 'portrait', label: '纵向' }, { value: 'landscape', label: '横向' }]} />
+            <Select options={[{ value: 'landscape', label: '横向' }]} />
           </Form.Item>
           <Form.Item label="页边距" name="templateMargin" style={{ width: '15%' }}>
             <InputNumber min={0} max={2} step={0.1} style={{ width: '100%' }} />
@@ -107,7 +107,7 @@ export function DocumentTemplateSettingsCard({
               templatePriceLabel: '价格',
               templateAmountLabel: '总价格',
               templateRemarkLabel: '备注',
-              templateOrientation: 'portrait',
+              templateOrientation: 'landscape',
               templateMargin: 0
             })}
           >

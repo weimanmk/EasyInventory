@@ -378,7 +378,7 @@ mod tests {
             &logs_dir,
             &backups_dir,
             &exports_dir,
-            "1.3.2",
+            "1.3.3",
         )
         .unwrap();
         let content = std::fs::read_to_string(package.file_path).unwrap();
